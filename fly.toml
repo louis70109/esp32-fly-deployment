@@ -1,0 +1,46 @@
+# Change `app` to a globally unique name before `fly launch --copy-config`.
+app = "esp-hub-louis"
+primary_region = "nrt"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  PORT = "8080"
+  MQTT_PORT = "1883"
+  DATA_DIR = "/data"
+
+# SQLite lives here. A volume pins the app to one machine, which is also what
+# we want: the MQTT broker keeps sessions in memory, so only run ONE machine.
+[[mounts]]
+  source = "hub_data"
+  destination = "/data"
+
+# Dashboard + REST API (https://<app>.fly.dev)
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "10s"
+
+# MQTT over TLS: devices connect to <app>.fly.dev:8883, Fly terminates TLS.
+[[services]]
+  protocol = "tcp"
+  internal_port = 1883
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+  [[services.ports]]
+    port = 8883
+    handlers = ["tls"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

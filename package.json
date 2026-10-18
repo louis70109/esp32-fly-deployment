@@ -1,0 +1,20 @@
+{
+  "name": "esp-hub",
+  "version": "1.0.0",
+  "private": true,
+  "description": "ESP32 device hub: API-key event logging, MQTT presence, admin dashboard",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node test/smoke.js"
+  },
+  "engines": { "node": ">=16" },
+  "dependencies": {
+    "aedes": "^0.51.3",
+    "better-sqlite3": "~8.7.0",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "mqtt": "^5.10.1"
+  }
+}

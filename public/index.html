@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP 裝置管理</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --text: #1c2330; --muted: #6b7587; --line: #e3e6ec;
+    --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --off: #9aa3b2; --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11151c; --card: #1a202b; --text: #e6e9ef; --muted: #98a2b3; --line: #2a3242;
+            --accent: #5b8def; --ok: #34d399; --warn: #fbbf24; --off: #5d6677; --bad: #f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, -apple-system, "Segoe UI", "Noto Sans TC", sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 17px; margin: 0; flex: 1; }
+  main { max-width: 1000px; margin: 0 auto; padding: 16px; }
+  button { font: inherit; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--bad); }
+  input { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); width: 100%; }
+  .summary { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .pill { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; color: var(--muted); }
+  .pill b { color: var(--text); }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .card.offline { opacity: .72; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .row.between { justify-content: space-between; }
+  .name { font-weight: 600; font-size: 16px; overflow-wrap: anywhere; }
+  .id { color: var(--muted); font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--off); flex: none; }
+  .dot.on { background: var(--ok); }
+  .badges { display: flex; gap: 6px; margin: 10px 0; flex-wrap: wrap; }
+  .badge { padding: 2px 10px; border-radius: 999px; font-size: 13px; border: 1px solid var(--line); color: var(--muted); }
+  .badge.run { color: var(--ok); border-color: var(--ok); }
+  .badge.idle { color: var(--warn); border-color: var(--warn); }
+  .meta { color: var(--muted); font-size: 13px; }
+  .actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .actions button { padding: 4px 10px; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.payload { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; overflow-wrap: anywhere; }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-top: 16px; overflow-x: auto; }
+  .panel h2 { font-size: 15px; margin: 0 0 8px; }
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--text); max-width: 560px; width: calc(100% - 32px); padding: 18px; }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  pre { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; font-size: 12.5px; margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .login { max-width: 360px; margin: 18vh auto 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px; }
+  .login h1 { margin: 0 0 14px; font-size: 18px; }
+  .err { color: var(--bad); min-height: 1.4em; margin: 8px 0 0; font-size: 14px; }
+  .empty { text-align: center; color: var(--muted); padding: 40px 0; }
+  label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<dialog id="dlg"></dialog>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const app = $('#app');
+  const dlg = $('#dlg');
+  const POLL_MS = 3000;
+
+  let adminKey = '';
+  try { adminKey = sessionStorage.getItem('adminKey') || ''; } catch {}
+  let devices = [];
+  let serverSkew = 0;
+  let selected = null;       // device id whose events are shown
+  let timer = null, tickTimer = null;
+
+  // Everything that comes from a device is untrusted: always build DOM with textContent.
+  function el(tag, props = {}, ...kids) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === 'class') n.className = v;
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+      else n.setAttribute(k, v);
+    }
+    for (const k of kids.flat()) if (k != null) n.append(k.nodeType ? k : document.createTextNode(String(k)));
+    return n;
+  }
+
+  async function api(method, path, body) {
+    const res = await fetch('/api/v1' + path, {
+      method,
+      headers: { 'X-Admin-Key': adminKey, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status });
+    return data;
+  }
+
+  function ago(ts) {
+    if (!ts) return '從未';
+    const s = Math.max(0, Math.round((Date.now() + serverSkew - ts) / 1000));
+    if (s < 5) return '剛剛';
+    if (s < 60) return s + ' 秒前';
+    if (s < 3600) return Math.floor(s / 60) + ' 分鐘前';
+    if (s < 86400) return Math.floor(s / 3600) + ' 小時前';
+    return Math.floor(s / 86400) + ' 天前';
+  }
+  const fmtTime = (ts) => new Date(ts).toLocaleString('zh-TW', { hour12: false });
+
+  // ------------------------------------------------------------ login view
+  function renderLogin(msg) {
+    app.replaceChildren(el('div', { class: 'login' },
+      el('h1', {}, 'ESP 裝置管理'),
+      el('label', { for: 'ak' }, '管理金鑰 (Admin Key)'),
+      el('input', { id: 'ak', type: 'password', autocomplete: 'current-password',
+        onkeydown: (e) => { if (e.key === 'Enter') doLogin(); } }),
+      el('p', { class: 'err', id: 'lerr' }, msg || ''),
+      el('button', { class: 'primary', onclick: doLogin }, '登入'),
+    ));
+    $('#ak').focus();
+  }
+
+  async function doLogin() {
+    adminKey = $('#ak').value.trim();
+    try {
+      await refresh();
+      try { sessionStorage.setItem('adminKey', adminKey); } catch {}
+      renderMain();
+      startPolling();
+    } catch (e) {
+      $('#lerr').textContent = e.status === 401 ? '金鑰錯誤' : e.message;
+    }
+  }
+
+  function logout() {
+    adminKey = '';
+    try { sessionStorage.removeItem('adminKey'); } catch {}
+    clearInterval(timer);
+    clearInterval(tickTimer);
+    renderLogin();
+  }
+
+  // ------------------------------------------------------------- main view
+  function renderMain() {
+    app.replaceChildren(
+      el('header', {},
+        el('h1', {}, 'ESP 裝置管理'),
+        el('button', { class: 'primary', onclick: openAdd }, '＋ 新增裝置'),
+        el('button', { onclick: logout }, '登出')),
+      el('main', {},
+        el('div', { class: 'summary', id: 'summary' }),
+        el('div', { class: 'grid', id: 'grid' }),
+        el('div', { id: 'events' })),
+    );
+    draw();
+  }
+
+  let drawSig = '';
+  function tick() {
+    for (const n of document.querySelectorAll('.ago')) {
+      const d = devices.find((x) => x.id === n.dataset.dev);
+      if (!d) continue;
+      n.textContent = ago(n.dataset.f === 'seen' ? d.last_seen : d.last_event && d.last_event.ts);
+    }
+  }
+  function draw() {
+    if (!$('#grid')) return;
+    // Re-rendering replaces the buttons, which can swallow a click in progress,
+    // so only rebuild when something other than a timestamp changed.
+    const sig = JSON.stringify(devices.map((d) => [d.id, d.name, d.online, d.running, d.last_event && d.last_event.id]));
+    if (sig === drawSig && $('#grid').children.length) return tick();
+    drawSig = sig;
+    const online = devices.filter((d) => d.online).length;
+    const running = devices.filter((d) => d.online && d.running).length;
+    $('#summary').replaceChildren(
+      el('span', { class: 'pill' }, '裝置 ', el('b', {}, devices.length)),
+      el('span', { class: 'pill' }, '在線 ', el('b', {}, online)),
+      el('span', { class: 'pill' }, '運轉中 ', el('b', {}, running)),
+    );
+    const grid = $('#grid');
+    if (!devices.length) {
+      grid.replaceChildren(el('div', { class: 'empty' }, '還沒有裝置，按右上角「新增裝置」開始。'));
+    } else {
+      grid.replaceChildren(...devices.map(card));
+    }
+  }
+
+  function card(d) {
+    const stateBadge = !d.online
+      ? el('span', { class: 'badge' }, '狀態未知')
+      : d.running === null
+        ? el('span', { class: 'badge' }, '尚未回報')
+        : d.running
+          ? el('span', { class: 'badge run' }, '運轉中')
+          : el('span', { class: 'badge idle' }, '未運轉');
+    return el('div', { class: 'card' + (d.online ? '' : ' offline') },
+      el('div', { class: 'row between' },
+        el('div', {}, el('div', { class: 'name' }, d.name), el('div', { class: 'id' }, d.id)),
+        el('span', { class: 'dot' + (d.online ? ' on' : ''), title: d.online ? '在線' : '離線' })),
+      el('div', { class: 'badges' },
+        el('span', { class: 'badge' }, d.online ? 'MQTT 在線' : 'MQTT 離線'), stateBadge),
+      el('div', { class: 'meta' }, '最後連線：', el('span', { class: 'ago', 'data-dev': d.id, 'data-f': 'seen' }, ago(d.last_seen))),
+      el('div', { class: 'meta' }, '最新事件：', d.last_event ? d.last_event.type + ' · ' : '尚無紀錄',
+        d.last_event ? el('span', { class: 'ago', 'data-dev': d.id, 'data-f': 'event' }, ago(d.last_event.ts)) : null),
+      el('div', { class: 'actions' },
+        el('button', { onclick: () => showEvents(d.id) }, '事件紀錄'),
+        el('button', { onclick: () => rename(d) }, '改名'),
+        el('button', { onclick: () => rotate(d) }, '換金鑰'),
+        el('button', { class: 'danger', onclick: () => remove(d) }, '刪除')),
+    );
+  }
+
+  let eventsSig = '';
+  async function showEvents(id, background) {
+    selected = id;
+    const d = devices.find((x) => x.id === id);
+    const box = $('#events');
+    try {
+      const { events } = await api('GET', `/devices/${encodeURIComponent(id)}/events?limit=100`);
+      const sig = id + ':' + events.length + ':' + (events[0] ? events[0].id : 0);
+      if (background && sig === eventsSig) return;
+      eventsSig = sig;
+      box.replaceChildren(el('div', { class: 'panel' },
+        el('div', { class: 'row between' },
+          el('h2', {}, `${d ? d.name : id} 的事件紀錄`),
+          el('button', { onclick: () => { selected = null; eventsSig = ''; box.replaceChildren(); } }, '關閉')),
+        events.length
+          ? el('table', {},
+              el('thead', {}, el('tr', {}, el('th', {}, '時間'), el('th', {}, '類型'), el('th', {}, '內容'), el('th', {}, '來源'))),
+              el('tbody', {}, events.map((e) => el('tr', {},
+                el('td', {}, fmtTime(e.ts)), el('td', {}, e.type),
+                el('td', { class: 'payload' }, e.payload == null ? '' : JSON.stringify(e.payload)),
+                el('td', {}, e.source)))))
+          : el('div', { class: 'empty' }, '尚無事件')));
+    } catch (e) { handleErr(e); }
+  }
+
+  // ---------------------------------------------------------------- dialogs
+  function closeDlg() { dlg.close(); }
+
+  function openAdd() {
+    dlg.replaceChildren(
+      el('h2', {}, '新增裝置'),
+      el('label', { for: 'dn' }, '名稱（例如：客廳冷氣）'),
+      el('input', { id: 'dn', maxlength: 60 }),
+      el('label', { for: 'di' }, '裝置 ID（選填，小寫英數與 - _，不填會自動產生）'),
+      el('input', { id: 'di', maxlength: 32, placeholder: 'esp-living' }),
+      el('p', { class: 'err', id: 'derr' }),
+      el('div', { class: 'row' },
+        el('button', { class: 'primary', onclick: submitAdd }, '建立'),
+        el('button', { onclick: closeDlg }, '取消')));
+    dlg.showModal();
+    $('#dn').focus();
+  }
+
+  async function submitAdd() {
+    try {
+      const body = { name: $('#dn').value.trim() };
+      const id = $('#di').value.trim();
+      if (id) body.id = id;
+      const res = await api('POST', '/devices', body);
+      showKey(res.device.id, res.api_key, '裝置已建立');
+      await refresh(); draw();
+    } catch (e) { $('#derr').textContent = e.message; }
+  }
+
+  function showKey(id, key, title) {
+    const host = location.hostname;
+    dlg.replaceChildren(
+      el('h2', {}, title),
+      el('p', { class: 'meta' }, '金鑰只會顯示這一次，請現在複製並燒錄到 ESP32。'),
+      el('label', {}, '裝置 ID'), el('pre', {}, id),
+      el('label', {}, 'API Key（HTTP 用 X-API-Key；MQTT 密碼）'), el('pre', {}, key),
+      el('label', {}, '連線方式'),
+      el('pre', {}, `HTTP  POST ${location.origin}/api/v1/events\n      header X-API-Key: <key>\nMQTT  ${host}:8883 (TLS)  user=${id}  pass=<key>`),
+      el('div', { class: 'row' },
+        el('button', { class: 'primary', onclick: () => navigator.clipboard && navigator.clipboard.writeText(key) }, '複製金鑰'),
+        el('button', { onclick: closeDlg }, '完成')));
+    if (!dlg.open) dlg.showModal();
+  }
+
+  async function rename(d) {
+    const name = prompt('新名稱', d.name);
+    if (!name || !name.trim()) return;
+    try { await api('PATCH', `/devices/${encodeURIComponent(d.id)}`, { name: name.trim() }); await refresh(); draw(); }
+    catch (e) { handleErr(e); }
+  }
+
+  async function rotate(d) {
+    if (!confirm(`替換 ${d.name} 的金鑰？舊金鑰會立刻失效，裝置會被斷線。`)) return;
+    try { const r = await api('POST', `/devices/${encodeURIComponent(d.id)}/rotate-key`); showKey(d.id, r.api_key, '新金鑰'); await refresh(); draw(); }
+    catch (e) { handleErr(e); }
+  }
+
+  async function remove(d) {
+    if (!confirm(`刪除 ${d.name}（${d.id}）？它的所有事件紀錄也會一併刪除，無法復原。`)) return;
+    try {
+      await api('DELETE', `/devices/${encodeURIComponent(d.id)}`);
+      if (selected === d.id) { selected = null; $('#events').replaceChildren(); }
+      await refresh(); draw();
+    } catch (e) { handleErr(e); }
+  }
+
+  // ---------------------------------------------------------------- polling
+  async function refresh() {
+    const data = await api('GET', '/devices');
+    devices = data.devices;
+    serverSkew = data.server_time - Date.now();
+  }
+
+  function handleErr(e) {
+    if (e.status === 401) logout(); else alert(e.message);
+  }
+
+  function startPolling() {
+    clearInterval(timer);
+    clearInterval(tickTimer);
+    tickTimer = setInterval(tick, 1000);
+    timer = setInterval(async () => {
+      if (document.hidden) return;
+      try { await refresh(); draw(); if (selected && !dlg.open) await showEvents(selected, true); }
+      catch (e) { if (e.status === 401) logout(); }
+    }, POLL_MS);
+  }
+
+  // ------------------------------------------------------------------- boot
+  (async () => {
+    if (!adminKey) return renderLogin();
+    try { await refresh(); renderMain(); startPolling(); }
+    catch { logout(); }
+  })();
+})();
+</script>
+</body>
+</html>
