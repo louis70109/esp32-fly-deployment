@@ -15,11 +15,11 @@ ESP32-C6 紅外線 / 開關機事件紀錄服務。一個 Node 程式同時提�
 
 ```bash
 npm install
-npm start      # 沒設 ADMIN_KEY 時會產生一組並印在 console
+npm start      # 沒設 ADMIN_PASSWORD 時會產生一組並印在 console（帳號預設 admin）
 npm test       # 端到端煙霧測試（HTTP + MQTT）
 ```
 
-環境變數：`ADMIN_KEY`（production 必填）、`PORT`(8080)、`MQTT_PORT`(1883)、`DATA_DIR`、`EVENT_RETENTION_DAYS`(90)。
+環境變數：`ADMIN_USER`(admin)、`ADMIN_PASSWORD`（production 必填）、`SESSION_SECRET`（簽 session cookie，建議固定）、`SESSION_HOURS`(12)、`PORT`(8080)、`MQTT_PORT`(1883)、`DATA_DIR`、`EVENT_RETENTION_DAYS`(90)。
 
 ## API
 
@@ -33,7 +33,7 @@ POST /api/v1/heartbeat
 `type` 為 `[a-z0-9_.-]{1,40}`；`ts` 選填（毫秒，與伺服器差超過 24 小時就忽略）。
 `power_on` / `power_off` 事件會自動把裝置標成運轉中 / 未運轉。
 
-管理端（Header `X-Admin-Key`）
+管理端（先 `POST /api/v1/login {username,password}` 取得 HttpOnly session cookie；`POST /logout` 登出）
 
 ```
 GET    /api/v1/devices
@@ -64,7 +64,7 @@ Broker 偵測到斷線（含 keepalive 逾時，約 1.5 × keepalive）就把該
 # 1. 改 fly.toml 的 app 名稱（需全域唯一）
 fly launch --copy-config --no-deploy
 fly volumes create hub_data --size 1 --region nrt
-fly secrets set ADMIN_KEY="$(openssl rand -base64 24)"
+fly secrets set ADMIN_USER=admin ADMIN_PASSWORD="$(openssl rand -base64 18)" SESSION_SECRET="$(openssl rand -hex 32)"
 fly deploy
 ```
 

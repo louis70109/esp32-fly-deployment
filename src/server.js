@@ -12,15 +12,21 @@ const HTTP_PORT = Number(process.env.PORT || 8080);
 const MQTT_PORT = Number(process.env.MQTT_PORT || 1883);
 const RETENTION_DAYS = Number(process.env.EVENT_RETENTION_DAYS || 90);
 
-let ADMIN_KEY = process.env.ADMIN_KEY;
-if (!ADMIN_KEY) {
-  if (process.env.NODE_ENV === 'production') {
-    console.error('ADMIN_KEY is required in production (fly secrets set ADMIN_KEY=...)');
+const IS_PROD = process.env.NODE_ENV === 'production';
+const ADMIN_USER = process.env.ADMIN_USER || 'admin';
+let ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+if (!ADMIN_PASSWORD) {
+  if (IS_PROD) {
+    console.error('ADMIN_PASSWORD is required in production (fly secrets set ADMIN_PASSWORD=...)');
     process.exit(1);
   }
-  ADMIN_KEY = 'ak_' + crypto.randomBytes(18).toString('base64url');
-  console.log(`[dev] ADMIN_KEY not set, generated: ${ADMIN_KEY}`);
+  ADMIN_PASSWORD = crypto.randomBytes(12).toString('base64url');
+  console.log(`[dev] ADMIN_PASSWORD not set, generated -> user: ${ADMIN_USER}  password: ${ADMIN_PASSWORD}`);
 }
+// Signs session cookies. Without a fixed secret every restart logs everyone out.
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const SESSION_TTL_MS = Number(process.env.SESSION_HOURS || 12) * 3600 * 1000;
+const COOKIE = 'hub_session';
 
 const safeEqual = (a, b) => {
   const ha = crypto.createHash('sha256').update(String(a || '')).digest();
@@ -186,12 +192,32 @@ function blocked(req) {
   return rec.n > 20;
 }
 
-function requireAdmin(req, res, next) {
-  if (blocked(req)) return res.status(429).json({ error: 'too many failed attempts' });
-  if (!safeEqual(req.get('x-admin-key'), ADMIN_KEY)) {
-    authFailed(req);
-    return res.status(401).json({ error: 'invalid admin key' });
+const sign = (v) => crypto.createHmac('sha256', SESSION_SECRET).update(v).digest('base64url');
+function makeSession() {
+  const exp = String(now() + SESSION_TTL_MS);
+  return `${exp}.${sign(exp)}`;
+}
+function validSession(token) {
+  if (!token) return false;
+  const [exp, mac] = token.split('.');
+  if (!exp || !mac || !safeEqual(mac, sign(exp))) return false;
+  return Number(exp) > now();
+}
+function readCookie(req, name) {
+  for (const part of (req.get('cookie') || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
   }
+  return null;
+}
+function setSessionCookie(req, res, token, maxAgeMs) {
+  const flags = ['Path=/', 'HttpOnly', 'SameSite=Strict', `Max-Age=${Math.floor(maxAgeMs / 1000)}`];
+  if (req.secure) flags.push('Secure');
+  res.set('Set-Cookie', `${COOKIE}=${token}; ${flags.join('; ')}`);
+}
+
+function requireAdmin(req, res, next) {
+  if (!validSession(readCookie(req, COOKIE))) return res.status(401).json({ error: 'login required' });
   next();
 }
 
@@ -215,6 +241,30 @@ const wrap = (fn) => (req, res) => {
 
 app.get('/healthz', (req, res) => res.json({ ok: true }));
 
+// ---- admin login ----
+app.post('/api/v1/login', (req, res) => {
+  if (blocked(req)) return res.status(429).json({ error: 'too many failed attempts' });
+  const { username, password } = req.body || {};
+  // Evaluate both so timing does not reveal which one was wrong.
+  const okUser = safeEqual(username, ADMIN_USER);
+  const okPass = safeEqual(password, ADMIN_PASSWORD);
+  if (!(okUser && okPass)) {
+    authFailed(req);
+    return res.status(401).json({ error: '帳號或密碼錯誤' });
+  }
+  setSessionCookie(req, res, makeSession(), SESSION_TTL_MS);
+  res.json({ ok: true });
+});
+
+app.post('/api/v1/logout', (req, res) => {
+  setSessionCookie(req, res, '', 0);
+  res.json({ ok: true });
+});
+
+app.get('/api/v1/session', (req, res) => {
+  res.json({ authenticated: validSession(readCookie(req, COOKIE)) });
+});
+
 // ---- device API (X-API-Key) ----
 app.post('/api/v1/events', requireDevice, wrap((req, res) => {
   const { type, payload, ts } = req.body || {};
@@ -232,7 +282,7 @@ app.post('/api/v1/heartbeat', requireDevice, wrap((req, res) => {
   res.json({ ok: true, server_time: now() });
 }));
 
-// ---- admin API (X-Admin-Key) ----
+// ---- admin API (login session cookie) ----
 app.get('/api/v1/devices', requireAdmin, wrap((req, res) => {
   res.json({ devices: q.list.all().map(publicDevice), server_time: now() });
 }));
@@ -311,4 +361,4 @@ function start() {
 
 if (require.main === module) start();
 
-module.exports = { app, aedes, start, ADMIN_KEY };
+module.exports = { app, aedes, start };
