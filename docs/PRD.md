@@ -78,6 +78,7 @@ curl https://esp-hub-louis.fly.dev/healthz    # {"ok":true}
 | 前端 / API | https://esp-hub-louis.fly.dev |
 | MQTT | `esp-hub-louis.fly.dev:8883`（TLS，Fly 終結，轉到容器 1883） |
 | GitHub | https://github.com/louis70109/esp32-fly-deployment（`main`） |
+| 文章（GitHub Pages） | https://nijialin.com/esp32-fly-deployment/ （原始檔在 `site/`，推到 `main` 且 `site/**` 有變更時由 `.github/workflows/pages.yml` 自動部署；帳號有綁自訂網域，所以不是 `louis70109.github.io`） |
 | 儲存 | SQLite，Fly volume `hub_data` 掛在 `/data`（1 GB） |
 | IP | 共用 IPv4 + 專屬 IPv6（免費；沒有買專屬 IPv4） |
 | Fly secrets | `ADMIN_USER`、`ADMIN_PASSWORD`、`SESSION_SECRET`（**密碼不在 repo 裡**，也不要寫進文件；使用者已拿到） |
