@@ -2,6 +2,8 @@
 
 最後更新：2026-10-18　｜　狀態：伺服器已上線；**ESP32-C6 韌體尚未完成**（見「待辦」）
 
+編寫與維護規則見 [README.md](README.md)；接手前先讀。
+
 ## 1. 目標
 
 用 ESP32-C6 控制紅外線（IR）發射器（例如冷氣、除濕機），並把「發射了什麼 IR 碼、開機/關機」這類事件
@@ -105,3 +107,6 @@ flyctl logs --app esp-hub-louis
 - `fly.toml`：`auto_stop_machines = "off"` 是必要的，機器休眠會讓所有裝置顯示離線。
 - 部署新版時密碼 / `SESSION_SECRET` 不變；`SESSION_SECRET` 換掉會讓所有人登出。
 - 安全守則：不要把 ADMIN 密碼、裝置 API key 寫進 repo、文件或 commit。
+
+## 7. 變更紀錄
+- 2026-10-18：建立 PRD。伺服器（API key、MQTT、前端、帳密登入）完成並部署到 Fly；韌體列為 P0 待辦。
