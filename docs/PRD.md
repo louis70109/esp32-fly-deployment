@@ -84,7 +84,8 @@ curl "https://$FLY_HOST/healthz"      # {"ok":true}
 | 前端 / API | `https://$FLY_HOST` |
 | MQTT | `$FLY_HOST:8883`（TLS，Fly 終結，轉到容器 1883） |
 | GitHub | https://github.com/louis70109/esp32-fly-deployment（`main`） |
-| 文章（GitHub Pages） | https://nijialin.com/esp32-fly-deployment/ （原始檔在 `site/`，推到 `main` 且 `site/**` 有變更時由 `.github/workflows/pages.yml` 自動部署；帳號有綁自訂網域，所以不是 `louis70109.github.io`） |
+| 文章（部落格，主要版本） | https://nijialin.com/2026/10/19/esp32-c6-fly-io-device-hub/ 。原始檔在使用者的部落格 repo `louis70109/louis70109.github.io` 的 `source/_posts/esp32-c6-fly-io-device-hub.md`（圖片在 `source/images/esp32-hub-*`），推到該 repo 的 `main` 會由它自己的 workflow 測試、建置、部署（並發 LINE 通知給管理者）。**文章裡的 AI prompt 是複製過去的靜態文字，與本 repo 的 `public/ai-prompt.txt` 不會自動同步**，改 prompt 時兩邊都要更新。 |
+| 文章（專案頁，副本） | https://nijialin.com/esp32-fly-deployment/ （原始檔在 `site/`，推到 `main` 且 `site/**` 有變更時由 `.github/workflows/pages.yml` 自動部署；帳號有綁自訂網域，所以不是 `louis70109.github.io`） |
 | 儲存 | SQLite，Fly volume `hub_data` 掛在 `/data`（1 GB） |
 | IP | 共用 IPv4 + 專屬 IPv6（免費；沒有買專屬 IPv4） |
 | Fly secrets | `ADMIN_USER`、`ADMIN_PASSWORD`、`SESSION_SECRET`（**密碼不在 repo 裡**，也不要寫進文件；使用者已拿到） |
@@ -241,6 +242,9 @@ flyctl logs --app "$FLY_APP"
 - 安全守則：不要把 ADMIN 密碼、裝置 API key 寫進 repo、文件或 commit。
 
 ## 7. 變更紀錄
+- 2026-10-19：依使用者要求，把文章寫進部落格 repo `louis70109/louis70109.github.io`（commit `ba98e9e81`），文筆與格式照該部落格慣例（front matter、`<!-- more -->`、emoji 小標、圖片放 `source/images`）。
+  該站用自製生成器（`scripts/site.mjs`，Node ≥ 20，我在 Node 16 也能建置）；push 到 `main` 後 workflow 跑 `npm test` + `npm run build` 並部署，已確認通過、線上文章與 7 個圖檔皆 200。
+  本 repo 的 GitHub Pages 專案頁仍保留（內容相同，屬副本）。要不要停掉或導向部落格版本待使用者決定。
 - 2026-10-19：AI Prompt 部署到 Fly（`0dca2f6`）並通過 `tools/e2e-prod.js`。
 - 2026-10-19：依使用者要求，從公開 repo 移除 Fly 的 app 名稱與網址：GitHub description、PRD、`fly.toml`、韌體預設主機、AI prompt、管理頁面、e2e 腳本都改成占位字，交接改為「登入 Fly 後 `flyctl apps list` 查」（§0.2）。**git 歷史裡仍有舊內容**（要清除需改寫歷史並 force-push，使用者未要求，未做）。正式站仍在跑舊檔案，下次部署才會同步。`fly.toml` 的 app 現在是占位字，部署靠 `--app "$FLY_APP"` 覆蓋，**這個覆蓋行為尚未實測**；若 `flyctl deploy` 報錯，在本機暫時把 `fly.toml` 的 app 改成實際名稱，不要 commit。
 - 2026-10-19：新增 AI Prompt（`public/ai-prompt.txt`、管理頁面按鈕、文章頁區塊、`test/prompt.js` 防漂移）；複製按鈕加上 `execCommand` 備援與成功 / 失敗提示；
