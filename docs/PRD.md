@@ -1,6 +1,6 @@
 # esp-hub PRD / 交接文件
 
-最後更新：2026-10-18　｜　狀態：基本伺服器已上線；**「金鑰生命週期」功能已完成並通過測試，但尚未部署到 Fly**（程式碼是否已推送，以 `git status -sb` 為準）；**ESP32-C6 韌體尚未完成**（見「待辦」）
+最後更新：2026-10-18　｜　狀態：伺服器（含金鑰生命週期）已部署到 Fly 並在線上驗證；**ESP32-C6 韌體尚未完成**（見「待辦」）
 
 編寫與維護規則見 [README.md](README.md)；接手前先讀。
 
@@ -29,8 +29,8 @@ curl https://esp-hub-louis.fly.dev/healthz    # {"ok":true}
 ```
 - Windows 上 PowerShell 可能找不到 `fly`，用 `flyctl`。
 - **管理者密碼不在任何檔案裡**，使用者自己保管。忘了就重設：`flyctl secrets set ADMIN_PASSWORD="新密碼" --app esp-hub-louis`（會自動重啟）。
-- **線上目前跑的是舊版**（沒有註冊碼 / 到期 / rotate）。要用 ESP 實測這些功能，必須先完成 §5 的 P0.5 部署，
-  或改用本機伺服器測（區網內讓板子連電腦的 IP:1883，韌體要有可切換的 host / port / 是否 TLS）。
+- 線上已是含註冊碼 / 到期 / rotate 的版本，可直接用 ESP 實測。要測「到期」類行為又不想等 90 天，改用本機伺服器並設 `KEY_TTL_DAYS=0.002`
+  （約 3 分鐘；區網內讓板子連電腦的 IP:1883，韌體要有可切換的 host / port / 是否 TLS）。
 
 ### 0.3 韌體開發環境（新電腦要自己裝；**我沒有驗證過任何一項**）
 - Arduino IDE 2.x（或 `arduino-cli`）＋ **esp32 board package 3.x**（C6 需要 3.x）；板型選 "ESP32C6 Dev Module"（實際板子型號請先問使用者）。
@@ -84,10 +84,14 @@ curl https://esp-hub-louis.fly.dev/healthz    # {"ok":true}
 已驗證（線上端到端 + 本機 `npm test`）：HTTP 事件上傳、MQTT over TLS 上線/離線偵測、
 管理登入、錯誤密碼 / 偽造 cookie / 舊金鑰皆被拒。
 
-### 2.1 金鑰生命週期（2026-10-18 完成，**未部署**）
-目前線上跑的是**不含此功能的舊版**（`d5f927f` 之前的程式）。本機程式已實作並通過 `npm test`
-（`test/smoke.js` 38 項 + `test/migrate.js` 4 項），前端的裝置卡片與「註冊碼」對話框在瀏覽器確認過（「新增裝置」對話框的勾選流程只有 API 測試，沒手動點過）。尚未做：
-部署到 Fly、在**正式資料庫**上跑遷移（本機只用舊結構的暫存資料庫驗證過；部署前建議先 `fly ssh sftp` / 快照備份 volume）。
+### 2.1 金鑰生命週期（2026-10-18 完成，**已部署並在線上驗證**）
+- **部署**：2026-10-18，程式為 commit `ac23016`。部署前手動建立 volume 快照 `vs_BYPBxn2KOYMSe0ggRemo`（保留 5 天；volume 當時才建立 2 小時，每日自動快照尚未產生）。
+  正式資料庫的遷移在啟動時自動完成，log 無錯誤。
+- **本機測試**：`npm test` = `test/smoke.js` 38 項 + `test/migrate.js` 4 項（用舊結構的暫存資料庫驗證遷移）。
+- **線上端到端**（部署後執行，測完已刪除測試裝置）：以 `enroll:true` 建立裝置 → `/enroll` 換 key（到期日 90.0 天）→ 註冊碼不可重用 →
+  事件上傳 → heartbeat（`should_rotate:false`）→ MQTT over TLS 連線後在線 + 運轉中 → `/rotate`（寬限期內舊 key 可用、新 key 一用舊 key 即作廢）→
+  管理者重新配發註冊碼並使舊 key 失效。全部通過。
+- **未驗證**：「新增裝置」對話框的「註冊碼」勾選流程只有 API 測試，沒在瀏覽器手動點過；過期掃描（每分鐘踢掉已連線 session）只在本機測試過，線上沒等到真的過期。
 
 已實作：一次性註冊碼 `/enroll`、預設 90 天到期、板子自行 `/rotate`（含 24h 寬限與斷電恢復）、
 `/heartbeat` 回報 `should_rotate`、MQTT 過期 session 掃描（每分鐘）、前端的「註冊碼」按鈕 / 到期顯示 / 「待註冊」標籤。
@@ -169,10 +173,6 @@ MQTT  devices/<id>/state | event | status(LWT) ; 訂閱 devices/<id>/cmd（目�
 5. **TLS 驗證**：草稿用 `setInsecure()`（加密但不驗伺服器）。正式版改 `setCACert()`（Fly 的憑證鏈為 Let's Encrypt，注意憑證輪替與 ESP 記憶體）。
 6. 腳本需要 `esptool` 與 ESP-IDF 的 `nvs_partition_gen.py`；先確認使用者有幾塊板子（決定要不要做批次腳本）。
 
-### P0.5 — 部署金鑰生命週期（伺服器端）
-- [ ] 備份 Fly volume（`fly volumes snapshots create` 或確認有近期每日快照）→ `flyctl deploy` → 用 `https://esp-hub-louis.fly.dev/healthz` 與一次登入確認；
-  完成條件：線上既有（空的）資料庫完成遷移，新建 `enroll:true` 裝置、換 key 流程在線上跑過一次後刪除測試裝置。
-
 ### P1
 - **Dependabot 安全警告**：推送時 GitHub 回報 https://github.com/louis70109/esp32-fly-deployment/security/dependabot/1 ，尚未查看是哪個套件、嚴重度。
   注意 `better-sqlite3` 釘在 `~8.7.0` 是因為本機 Node 16 沒有 9.x 的預編譯檔；Docker 用 Node 20，若要升級要確認兩邊。
@@ -183,6 +183,14 @@ MQTT  devices/<id>/state | event | status(LWT) ; 訂閱 devices/<id>/cmd（目�
 - server → 裝置指令（`devices/<id>/cmd` 已開放訂閱但沒有發送端）、事件匯出 / 圖表、多管理者帳號、Fly 上的資料備份策略（volume 有每日快照保留 5 天）。
 
 ## 6. 開發與維運備忘
+
+**部署新版的標準流程**（照做，這次就是這樣做的）：
+1. `git push`；`npm test` 全過。
+2. 確認 volume 有近期快照：`flyctl volumes snapshots list <volume-id> --app esp-hub-louis`（**要用 volume ID，不是名稱**；ID 用 `flyctl volumes list --app esp-hub-louis` 查）。
+   沒有或太舊就 `flyctl volumes snapshots create <volume-id> --app esp-hub-louis`，等狀態從 `running` 變 `created` 再繼續。
+3. `flyctl deploy --app esp-hub-louis --remote-only --ha=false`；看 `flyctl logs --app esp-hub-louis --no-tail`
+   （啟動瞬間 health check 失敗一次是正常的，之後會 passing）。
+4. `curl https://esp-hub-louis.fly.dev/healthz`，再對線上跑一次端到端（建測試裝置 → 驗證 → 刪除）。需要管理者密碼，由使用者提供。
 
 ```bash
 npm install && npm start        # 本機；沒設 ADMIN_PASSWORD 會產生一組並印在 console（帳號 admin）
@@ -199,6 +207,7 @@ flyctl logs --app esp-hub-louis
 - 安全守則：不要把 ADMIN 密碼、裝置 API key 寫進 repo、文件或 commit。
 
 ## 7. 變更紀錄
+- 2026-10-18：部署金鑰生命週期到 Fly（commit `ac23016`），部署前先建 volume 快照，部署後在線上跑完註冊碼 / rotate 端到端並刪除測試裝置；程式已推到 GitHub `main`。
 - 2026-10-18：實作金鑰生命週期（註冊碼 / 90 天到期 / 板子自行換 key / MQTT 過期掃描 / 前端對應 UI）、可設定的失敗節流、舊資料庫自動遷移；
-  測試擴充為 38 + 4 項。**未部署**。過程中測試抓到並修正一個錯誤：建立裝置時回傳的 `enrollment_expires_at` 因組裝順序而缺漏。
+  測試擴充為 38 + 4 項。過程中測試抓到並修正一個錯誤：建立裝置時回傳的 `enrollment_expires_at` 因組裝順序而缺漏。
 - 2026-10-18：建立 PRD。伺服器（API key、MQTT、前端、帳密登入）完成並部署到 Fly；韌體列為 P0 待辦。
