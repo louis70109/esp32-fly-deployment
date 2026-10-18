@@ -18,6 +18,8 @@
 | 事件 | `boot`、`enrolled`、`key_rotated`、`ir_tx`、`ir_rx`、`power_on`、`power_off`，失敗時暫存最多 16 筆重送 |
 | 序列埠指令 | `WIFI`、`ENROLL`、`KEY`、`SET`、`STATUS`、`WIPE`、`REBOOT`、`HELP` |
 
+想請 AI 幫你產生或改寫韌體？見 [AI-PROMPT.md](AI-PROMPT.md)（可直接貼上的 prompt，含完整 API 規格，且不需要把 Wi-Fi 密碼或註冊碼貼給 AI）。
+
 ## 開發環境（新電腦要自己裝）
 
 - Arduino IDE 2.x（或 `arduino-cli`）＋ **esp32 board package 3.x**。
