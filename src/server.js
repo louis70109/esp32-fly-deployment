@@ -6,7 +6,7 @@ const express = require('express');
 const Aedes = require('aedes');
 const store = require('./db');
 
-const { q, db, now, hashKey, newKey, publicDevice, publicEvent, deviceByKey } = store;
+const { q, db, now, hashKey, newKey, newEnrollCode, publicDevice, publicEvent, authenticateKey } = store;
 
 const HTTP_PORT = Number(process.env.PORT || 8080);
 const MQTT_PORT = Number(process.env.MQTT_PORT || 1883);
@@ -27,6 +27,13 @@ if (!ADMIN_PASSWORD) {
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const SESSION_TTL_MS = Number(process.env.SESSION_HOURS || 12) * 3600 * 1000;
 const COOKIE = 'hub_session';
+
+const DAY = 24 * 3600 * 1000;
+const AUTH_FAIL_LIMIT = Number(process.env.AUTH_FAIL_LIMIT || 20);       // failed auths per IP per minute
+const KEY_TTL_DAYS = Number(process.env.KEY_TTL_DAYS ?? 90);            // 0 = new keys never expire
+const KEY_GRACE_HOURS = Number(process.env.KEY_GRACE_HOURS ?? 24);      // old key stays valid after a device-side rotation
+const ENROLL_TTL_HOURS = Number(process.env.ENROLL_TTL_HOURS ?? 24);    // default life of a one-time enrollment code
+const keyExpiryFrom = (t) => (KEY_TTL_DAYS > 0 ? t + KEY_TTL_DAYS * DAY : null);
 
 const safeEqual = (a, b) => {
   const ha = crypto.createHash('sha256').update(String(a || '')).digest();
@@ -70,15 +77,38 @@ function setState(device, state, t = now()) {
   q.setState.run(state.running ? 1 : 0, json, t, t, device.id);
 }
 
-function createDevice(name, wantedId) {
+/** Issues a one-time enrollment code for a device; any earlier unused code is revoked. */
+function issueEnrollment(deviceId, ttlHours) {
+  const hours = Math.min(Math.max(Number(ttlHours) || ENROLL_TTL_HOURS, 1), 168);
+  const t = now();
+  const code = newEnrollCode();
+  q.dropUnusedEnroll.run(deviceId);
+  q.insertEnroll.run(deviceId, hashKey(code), t, t + hours * 3600 * 1000);
+  return { code, expires_at: t + hours * 3600 * 1000 };
+}
+
+/**
+ * With enroll=true the device is created without a usable key; the board redeems the
+ * one-time code for its key on first boot (POST /api/v1/enroll).
+ */
+function createDevice(name, wantedId, enroll = false, ttlHours) {
   const id = wantedId || 'esp-' + crypto.randomBytes(3).toString('hex');
   if (!DEVICE_ID_RE.test(id)) {
     throw Object.assign(new Error('id must match [a-z0-9][a-z0-9_-]{1,31}'), { status: 400 });
   }
   if (q.byId.get(id)) throw Object.assign(new Error('id already exists'), { status: 409 });
+  const label = String(name || id).slice(0, 60);
+  const t = now();
+  if (enroll) {
+    // Placeholder hash nobody knows, so the device cannot authenticate until it enrolls.
+    q.insert.run(id, label, hashKey(newKey()), t, 0, null);
+    const enrollment = issueEnrollment(id, ttlHours); // before publicDevice, so it reports the new code's expiry
+    return { device: publicDevice(q.byId.get(id)), enrollment };
+  }
   const key = newKey();
-  q.insert.run(id, String(name || id).slice(0, 60), hashKey(key), now());
-  return { device: publicDevice(q.byId.get(id)), api_key: key };
+  const expires = keyExpiryFrom(t);
+  q.insert.run(id, label, hashKey(key), t, 1, expires);
+  return { device: publicDevice(q.byId.get(id)), api_key: key, key_expires_at: expires };
 }
 
 // ---------------------------------------------------------------------- MQTT
@@ -88,13 +118,14 @@ const mqttClients = new Map(); // deviceId -> client currently owning the sessio
 
 aedes.authenticate = (client, username, password, cb) => {
   const key = password ? password.toString() : '';
-  const device = deviceByKey(key);
-  if (!device || !safeEqual(device.id, username)) {
+  const auth = authenticateKey(key);
+  if (!auth.device || !safeEqual(auth.device.id, username)) {
     const err = new Error('bad credentials');
     err.returnCode = 4;
     return cb(err, false);
   }
-  client.deviceId = device.id;
+  client.deviceId = auth.device.id;
+  client.authVia = auth.via;
   cb(null, true);
 };
 
@@ -167,6 +198,17 @@ function dropMqttClient(deviceId) {
   if (c) c.close();
 }
 
+/** MQTT checks the key only at connect time, so periodically drop sessions whose key has since lapsed. */
+function sweepExpiredSessions() {
+  const t = now();
+  for (const [id, client] of mqttClients) {
+    const d = q.byId.get(id);
+    const keyExpired = !d || (d.key_expires_at && d.key_expires_at <= t);
+    const graceOver = !keyExpired && client.authVia === 'previous' && (!d.prev_key_hash || d.prev_key_expires_at <= t);
+    if (keyExpired || graceOver) client.close();
+  }
+}
+
 // ---------------------------------------------------------------------- HTTP
 
 const app = express();
@@ -189,7 +231,7 @@ function blocked(req) {
   const rec = failures.get(req.ip);
   if (!rec) return false;
   if (now() > rec.reset) { failures.delete(req.ip); return false; }
-  return rec.n > 20;
+  return rec.n > AUTH_FAIL_LIMIT;
 }
 
 const sign = (v) => crypto.createHmac('sha256', SESSION_SECRET).update(v).digest('base64url');
@@ -223,12 +265,13 @@ function requireAdmin(req, res, next) {
 
 function requireDevice(req, res, next) {
   if (blocked(req)) return res.status(429).json({ error: 'too many failed attempts' });
-  const device = deviceByKey(req.get('x-api-key'));
-  if (!device) {
+  const auth = authenticateKey(req.get('x-api-key'));
+  if (!auth.device) {
     authFailed(req);
-    return res.status(401).json({ error: 'invalid api key' });
+    return res.status(401).json({ error: auth.error === 'expired' ? 'api key expired' : 'invalid api key' });
   }
-  req.device = device;
+  req.device = auth.device;
+  req.keyVia = auth.via;
   next();
 }
 
@@ -279,8 +322,46 @@ app.post('/api/v1/state', requireDevice, wrap((req, res) => {
 
 app.post('/api/v1/heartbeat', requireDevice, wrap((req, res) => {
   q.touch.run(now(), req.device.id);
-  res.json({ ok: true, server_time: now() });
+  const exp = req.device.key_expires_at || null;
+  // Tells the board when to call /rotate: once a third of the key's life is left.
+  const shouldRotate = !!exp && KEY_TTL_DAYS > 0 && exp - now() <= (KEY_TTL_DAYS * DAY) / 3;
+  res.json({ ok: true, server_time: now(), key_expires_at: exp, should_rotate: shouldRotate || req.keyVia === 'previous' });
 }));
+
+// Board swaps its current key for a fresh one. The key it used stays valid for a grace
+// window (so a power cut mid-write cannot lock it out) and dies as soon as the new key is used.
+app.post('/api/v1/rotate', requireDevice, wrap((req, res) => {
+  const key = newKey();
+  const t = now();
+  const expires = keyExpiryFrom(t);
+  const graceUntil = t + KEY_GRACE_HOURS * 3600 * 1000;
+  if (req.keyVia === 'previous') {
+    q.reissueKey.run(hashKey(key), expires, graceUntil, req.device.id);
+  } else {
+    q.rotateKey.run(graceUntil, hashKey(key), expires, req.device.id);
+  }
+  res.json({ api_key: key, key_expires_at: expires, old_key_valid_until: graceUntil });
+}));
+
+// Unauthenticated by design: the one-time code IS the credential. Throttled like failed logins.
+app.post('/api/v1/enroll', (req, res) => {
+  if (blocked(req)) return res.status(429).json({ error: 'too many failed attempts' });
+  const { device_id: deviceId, code } = req.body || {};
+  const en = typeof code === 'string' ? q.enrollByHash.get(hashKey(code)) : undefined;
+  if (!en || en.device_id !== deviceId || en.used_at || en.expires_at <= now()) {
+    authFailed(req);
+    return res.status(401).json({ error: 'invalid or expired enrollment code' });
+  }
+  const key = newKey();
+  const t = now();
+  const expires = keyExpiryFrom(t);
+  db.transaction(() => {
+    q.setKey.run(hashKey(key), expires, deviceId);
+    q.useEnroll.run(t, en.id);
+  })();
+  dropMqttClient(deviceId); // a re-enrolled board must reconnect with the new key
+  res.status(201).json({ device_id: deviceId, api_key: key, key_expires_at: expires });
+});
 
 // ---- admin API (login session cookie) ----
 app.get('/api/v1/devices', requireAdmin, wrap((req, res) => {
@@ -288,8 +369,8 @@ app.get('/api/v1/devices', requireAdmin, wrap((req, res) => {
 }));
 
 app.post('/api/v1/devices', requireAdmin, wrap((req, res) => {
-  const { name, id } = req.body || {};
-  res.status(201).json(createDevice(name, id));
+  const { name, id, enroll, ttl_hours: ttlHours } = req.body || {};
+  res.status(201).json(createDevice(name, id, enroll === true, ttlHours));
 }));
 
 app.patch('/api/v1/devices/:id', requireAdmin, wrap((req, res) => {
@@ -303,9 +384,18 @@ app.patch('/api/v1/devices/:id', requireAdmin, wrap((req, res) => {
 app.post('/api/v1/devices/:id/rotate-key', requireAdmin, wrap((req, res) => {
   if (!q.byId.get(req.params.id)) return res.status(404).json({ error: 'not found' });
   const key = newKey();
-  q.setKey.run(hashKey(key), req.params.id);
+  const expires = keyExpiryFrom(now());
+  q.setKey.run(hashKey(key), expires, req.params.id);
+  q.dropUnusedEnroll.run(req.params.id);
   dropMqttClient(req.params.id); // old key must stop working immediately
-  res.json({ api_key: key });
+  res.json({ api_key: key, key_expires_at: expires });
+}));
+
+// New one-time code for an existing device (e.g. re-provisioning). The old key keeps
+// working until the board actually enrolls, which replaces it.
+app.post('/api/v1/devices/:id/enrollment', requireAdmin, wrap((req, res) => {
+  if (!q.byId.get(req.params.id)) return res.status(404).json({ error: 'not found' });
+  res.status(201).json(issueEnrollment(req.params.id, (req.body || {}).ttl_hours));
 }));
 
 app.delete('/api/v1/devices/:id', requireAdmin, wrap((req, res) => {
@@ -336,6 +426,7 @@ app.use('/api', (req, res) => res.status(404).json({ error: 'not found' }));
 
 function pruneOldEvents() {
   const cutoff = now() - RETENTION_DAYS * 24 * 3600 * 1000;
+  q.pruneEnroll.run(now() - 7 * DAY);
   const { changes } = q.prune.run(cutoff);
   if (changes) console.log(`[prune] removed ${changes} events older than ${RETENTION_DAYS}d`);
 }
@@ -343,6 +434,7 @@ function pruneOldEvents() {
 function start() {
   pruneOldEvents();
   setInterval(pruneOldEvents, 6 * 3600 * 1000).unref();
+  setInterval(sweepExpiredSessions, 60 * 1000).unref();
 
   const mqttServer = net.createServer(aedes.handle);
   mqttServer.listen(MQTT_PORT, () => console.log(`MQTT broker on :${MQTT_PORT}`));
@@ -361,4 +453,4 @@ function start() {
 
 if (require.main === module) start();
 
-module.exports = { app, aedes, start };
+module.exports = { app, aedes, start, sweepExpiredSessions };

@@ -10,9 +10,11 @@ process.env.ADMIN_PASSWORD = 'correct horse';
 process.env.SESSION_SECRET = 'test-secret';
 process.env.PORT = '18080';
 process.env.MQTT_PORT = '11883';
+process.env.AUTH_FAIL_LIMIT = '60';
 
 const mqtt = require('mqtt');
-const { start } = require('../src/server');
+const { start, sweepExpiredSessions } = require('../src/server');
+const { db: rawDb } = require('../src/db');
 
 const httpMod = require('http');
 // Node 16 has no global fetch; tiny stand-in returning {status, json(), text()}.
@@ -140,6 +142,127 @@ const connect = (id, key) => new Promise((resolve, reject) => {
   assert.strictEqual((await http('GET', '/devices/esp-b/events', { admin: true })).status, 404);
   check('delete works', () => {});
 
+  // ------------------------------------------------ enrollment codes
+  const DAY = 24 * 3600 * 1000;
+  const en = await http('POST', '/devices', { admin: true, body: { name: 'New', id: 'esp-c', enroll: true } });
+  assert.strictEqual(en.status, 201);
+  const code = en.body.enrollment.code;
+  check('enroll-mode device is created without an api key', () => {
+    assert.ok(code.startsWith('en_'));
+    assert.strictEqual(en.body.api_key, undefined);
+    assert.strictEqual(en.body.device.enrolled, false);
+    assert.ok(en.body.device.enrollment_expires_at > Date.now());
+  });
+  assert.strictEqual((await http('POST', '/enroll', { body: { device_id: 'esp-a', code } })).status, 401); // wrong device
+  assert.strictEqual((await http('POST', '/enroll', { body: { device_id: 'esp-c', code: 'en_wrong' } })).status, 401);
+  assert.strictEqual((await http('POST', '/enroll', { body: { device_id: 'esp-c' } })).status, 401);
+  check('enroll rejects wrong device, bad code, missing code', () => {});
+  const redeemed = await http('POST', '/enroll', { body: { device_id: 'esp-c', code } });
+  assert.strictEqual(redeemed.status, 201);
+  let keyC = redeemed.body.api_key;
+  check('enroll returns key with ~90 day expiry', () => {
+    assert.ok(keyC.startsWith('dk_'));
+    assert.ok(Math.abs(redeemed.body.key_expires_at - (Date.now() + 90 * DAY)) < 60000);
+  });
+  assert.strictEqual((await http('POST', '/events', { key: keyC, body: { type: 'boot' } })).status, 201);
+  assert.strictEqual((await http('POST', '/enroll', { body: { device_id: 'esp-c', code } })).status, 401);
+  check('enrolled key works; code cannot be reused', () => {});
+
+  // expired code
+  const stale = await http('POST', '/devices/esp-c/enrollment', { admin: true, body: {} });
+  assert.strictEqual(stale.status, 201);
+  rawDb.prepare('UPDATE enrollments SET expires_at = ? WHERE used_at IS NULL').run(Date.now() - 1000);
+  assert.strictEqual((await http('POST', '/enroll', { body: { device_id: 'esp-c', code: stale.body.code } })).status, 401);
+  check('expired enrollment code is rejected', () => {});
+
+  // re-provisioning: old key keeps working until the new code is redeemed, then dies and MQTT drops
+  const again = await http('POST', '/devices/esp-c/enrollment', { admin: true, body: { ttl_hours: 2 } });
+  assert.strictEqual((await http('POST', '/events', { key: keyC, body: { type: 'boot' } })).status, 201);
+  const mc = await connect('esp-c', keyC);
+  const mcClosed = new Promise((r) => mc.once('close', r));
+  const re = await http('POST', '/enroll', { body: { device_id: 'esp-c', code: again.body.code } });
+  assert.strictEqual(re.status, 201);
+  await Promise.race([mcClosed, sleep(1500).then(() => { throw new Error('re-enroll did not drop session'); })]);
+  assert.strictEqual((await http('POST', '/events', { key: keyC, body: { type: 'boot' } })).status, 401);
+  keyC = re.body.api_key;
+  assert.strictEqual((await http('POST', '/events', { key: keyC, body: { type: 'boot' } })).status, 201);
+  check('re-enroll replaces old key and drops MQTT session', () => {});
+
+  // new code revokes the previous unused one
+  const c1 = await http('POST', '/devices/esp-c/enrollment', { admin: true, body: {} });
+  const c2 = await http('POST', '/devices/esp-c/enrollment', { admin: true, body: {} });
+  assert.strictEqual((await http('POST', '/enroll', { body: { device_id: 'esp-c', code: c1.body.code } })).status, 401);
+  check('issuing a new code revokes the earlier unused one', () => {});
+  rawDb.prepare('DELETE FROM enrollments WHERE used_at IS NULL').run();
+
+  // ------------------------------------------------ device-side rotation
+  const r1 = await http('POST', '/rotate', { key: keyC });
+  assert.strictEqual(r1.status, 200);
+  const k2 = r1.body.api_key;
+  check('rotate returns a new key with a grace deadline', () => {
+    assert.notStrictEqual(k2, keyC);
+    assert.ok(r1.body.old_key_valid_until > Date.now());
+  });
+  assert.strictEqual((await http('POST', '/events', { key: keyC, body: { type: 'boot' } })).status, 201);   // old key, grace
+  assert.strictEqual((await http('POST', '/events', { key: k2, body: { type: 'boot' } })).status, 201);     // new key proves itself
+  assert.strictEqual((await http('POST', '/events', { key: keyC, body: { type: 'boot' } })).status, 401);   // old key retired
+  check('old key works during grace, dies once new key is used', () => {});
+
+  // grace window lapses without the new key ever being used
+  const r2 = await http('POST', '/rotate', { key: k2 });
+  const k3 = r2.body.api_key;
+  rawDb.prepare('UPDATE devices SET prev_key_expires_at = ? WHERE id = ?').run(Date.now() - 1000, 'esp-c');
+  assert.strictEqual((await http('POST', '/events', { key: k2, body: { type: 'boot' } })).status, 401);
+  assert.strictEqual((await http('POST', '/events', { key: k3, body: { type: 'boot' } })).status, 201);
+  check('old key is rejected after grace window ends', () => {});
+
+  // new key never arrived (power cut): board retries /rotate with the old key
+  const r3 = await http('POST', '/rotate', { key: k3 });
+  const lost = r3.body.api_key;                       // pretend this response was lost
+  const r4 = await http('POST', '/rotate', { key: k3 });   // via previous key
+  assert.strictEqual(r4.status, 200);
+  const k5 = r4.body.api_key;
+  assert.strictEqual((await http('POST', '/events', { key: lost, body: { type: 'boot' } })).status, 401);
+  assert.strictEqual((await http('POST', '/events', { key: k3, body: { type: 'boot' } })).status, 201);
+  assert.strictEqual((await http('POST', '/events', { key: k5, body: { type: 'boot' } })).status, 201);
+  check('retrying rotate with the old key recovers from a lost response', () => {});
+
+  // ------------------------------------------------ expiry
+  const hb = await http('POST', '/heartbeat', { key: k5 });
+  check('heartbeat reports expiry; fresh key should not rotate', () => {
+    assert.ok(hb.body.key_expires_at > Date.now());
+    assert.strictEqual(hb.body.should_rotate, false);
+  });
+  rawDb.prepare('UPDATE devices SET key_expires_at = ? WHERE id = ?').run(Date.now() + 10 * DAY, 'esp-c');
+  assert.strictEqual((await http('POST', '/heartbeat', { key: k5 })).body.should_rotate, true);
+  check('heartbeat asks to rotate in the last third of the key life', () => {});
+
+  const mq = await connect('esp-c', k5);
+  rawDb.prepare('UPDATE devices SET key_expires_at = ? WHERE id = ?').run(Date.now() - 1000, 'esp-c');
+  const expired = await http('POST', '/events', { key: k5, body: { type: 'boot' } });
+  check('expired key is rejected with a clear error', () => {
+    assert.strictEqual(expired.status, 401);
+    assert.strictEqual(expired.body.error, 'api key expired');
+  });
+  await assert.rejects(connect('esp-c', k5));
+  assert.strictEqual((await http('POST', '/rotate', { key: k5 })).status, 401);
+  check('expired key cannot connect to MQTT or rotate itself', () => {});
+  const swept = new Promise((r) => mq.once('close', r));
+  sweepExpiredSessions();
+  await Promise.race([swept, sleep(1500).then(() => { throw new Error('sweep did not drop expired session'); })]);
+  check('sweep drops already-connected sessions once the key expires', () => {});
+
+  // admin can always recover: manual key change gives a fresh expiry
+  const man = await http('POST', '/devices/esp-c/rotate-key', { admin: true });
+  assert.ok(man.body.key_expires_at > Date.now());
+  assert.strictEqual((await http('POST', '/events', { key: man.body.api_key, body: { type: 'boot' } })).status, 201);
+  check('admin rotate-key issues a fresh key with new expiry', () => {});
+
+  // existing-style device (no expiry column value) never expires
+  rawDb.prepare('UPDATE devices SET key_expires_at = NULL WHERE id = ?').run('esp-c');
+  assert.strictEqual((await http('POST', '/events', { key: man.body.api_key, body: { type: 'boot' } })).status, 201);
+  check('key with no expiry (legacy) never expires', () => {});
+
   // logout clears the session cookie
   const out = await http('POST', '/logout', { admin: true });
   assert.ok(/Max-Age=0/.test(out.setCookie[0]));
@@ -148,6 +271,13 @@ const connect = (id, key) => new Promise((resolve, reject) => {
   // static UI
   const html = await (await fetch('http://127.0.0.1:18080/')).text();
   check('dashboard served', () => assert.ok(html.includes('ESP 裝置管理')));
+
+  // failed-auth throttle (runs last: it locks this IP out for a minute)
+  let status = 0;
+  for (let i = 0; i < 70 && status !== 429; i++) status = (await http('POST', '/enroll', { body: { device_id: 'esp-c', code: 'en_x' + i } })).status;
+  check('repeated bad enrollment attempts get throttled (429)', () => assert.strictEqual(status, 429));
+  assert.strictEqual((await http('POST', '/login', { body: { username: 'boss', password: 'correct horse' } })).status, 429);
+  check('throttle also covers login', () => {});
 
   console.log(`\n${ok} checks passed`);
   httpServer.close(); mqttServer.close();

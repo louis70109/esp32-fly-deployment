@@ -39,6 +39,10 @@
   .badge { padding: 2px 10px; border-radius: 999px; font-size: 13px; border: 1px solid var(--line); color: var(--muted); }
   .badge.run { color: var(--ok); border-color: var(--ok); }
   .badge.idle { color: var(--warn); border-color: var(--warn); }
+  .badge.bad { color: var(--bad); border-color: var(--bad); }
+  .badge.warn { color: var(--warn); border-color: var(--warn); }
+  .check { display: flex; gap: 8px; align-items: flex-start; margin: 12px 0 0; color: var(--text); font-size: 14px; }
+  .check input { width: auto; margin-top: 4px; }
   .meta { color: var(--muted); font-size: 13px; }
   .actions { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
   .actions button { padding: 4px 10px; font-size: 13px; }
@@ -108,6 +112,14 @@
     if (s < 86400) return Math.floor(s / 3600) + ' 小時前';
     return Math.floor(s / 86400) + ' 天前';
   }
+  const fmtDate = (ts) => new Date(ts).toLocaleDateString('zh-TW');
+  function keyLine(d) {
+    if (!d.enrolled) return d.enrollment_expires_at ? `註冊碼有效至 ${fmtTime(d.enrollment_expires_at)}` : '註冊碼已過期，請重新產生';
+    if (d.key_expired) return '金鑰已過期，請產生註冊碼重新配發';
+    if (!d.key_expires_at) return '金鑰：不會過期';
+    const days = Math.ceil((d.key_expires_at - (Date.now() + serverSkew)) / 86400000);
+    return `金鑰 ${fmtDate(d.key_expires_at)} 到期（剩 ${days} 天）`;
+  }
   const fmtTime = (ts) => new Date(ts).toLocaleString('zh-TW', { hour12: false });
 
   // ------------------------------------------------------------ login view
@@ -171,7 +183,8 @@
     if (!$('#grid')) return;
     // Re-rendering replaces the buttons, which can swallow a click in progress,
     // so only rebuild when something other than a timestamp changed.
-    const sig = JSON.stringify(devices.map((d) => [d.id, d.name, d.online, d.running, d.last_event && d.last_event.id]));
+    const sig = JSON.stringify(devices.map((d) => [d.id, d.name, d.online, d.running, d.last_event && d.last_event.id,
+      d.enrolled, d.key_expires_at, d.key_expired, d.key_grace_until, d.enrollment_expires_at]));
     if (sig === drawSig && $('#grid').children.length) return tick();
     drawSig = sig;
     const online = devices.filter((d) => d.online).length;
@@ -197,17 +210,23 @@
         : d.running
           ? el('span', { class: 'badge run' }, '運轉中')
           : el('span', { class: 'badge idle' }, '未運轉');
+    const keyBadge = !d.enrolled
+      ? el('span', { class: 'badge warn' }, '待註冊')
+      : d.key_expired ? el('span', { class: 'badge bad' }, '金鑰過期') : null;
     return el('div', { class: 'card' + (d.online ? '' : ' offline') },
       el('div', { class: 'row between' },
         el('div', {}, el('div', { class: 'name' }, d.name), el('div', { class: 'id' }, d.id)),
         el('span', { class: 'dot' + (d.online ? ' on' : ''), title: d.online ? '在線' : '離線' })),
       el('div', { class: 'badges' },
-        el('span', { class: 'badge' }, d.online ? 'MQTT 在線' : 'MQTT 離線'), stateBadge),
+        el('span', { class: 'badge' }, d.online ? 'MQTT 在線' : 'MQTT 離線'), stateBadge, keyBadge),
       el('div', { class: 'meta' }, '最後連線：', el('span', { class: 'ago', 'data-dev': d.id, 'data-f': 'seen' }, ago(d.last_seen))),
       el('div', { class: 'meta' }, '最新事件：', d.last_event ? d.last_event.type + ' · ' : '尚無紀錄',
         d.last_event ? el('span', { class: 'ago', 'data-dev': d.id, 'data-f': 'event' }, ago(d.last_event.ts)) : null),
+      el('div', { class: 'meta' }, keyLine(d)),
+      d.key_grace_until ? el('div', { class: 'meta' }, `舊金鑰寬限至 ${fmtTime(d.key_grace_until)}`) : null,
       el('div', { class: 'actions' },
         el('button', { onclick: () => showEvents(d.id) }, '事件紀錄'),
+        el('button', { onclick: () => issueCode(d) }, '註冊碼'),
         el('button', { onclick: () => rename(d) }, '改名'),
         el('button', { onclick: () => rotate(d) }, '換金鑰'),
         el('button', { class: 'danger', onclick: () => remove(d) }, '刪除')),
@@ -249,6 +268,9 @@
       el('input', { id: 'dn', maxlength: 60 }),
       el('label', { for: 'di' }, '裝置 ID（選填，小寫英數與 - _，不填會自動產生）'),
       el('input', { id: 'di', maxlength: 32, placeholder: 'esp-living' }),
+      el('label', { class: 'check' },
+        el('input', { type: 'checkbox', id: 'den', checked: 'checked' }),
+        el('span', {}, '用一次性註冊碼配發（建議）。板子第一次開機時用註冊碼換金鑰，註冊碼 24 小時內有效、只能用一次。取消勾選則直接產生金鑰。')),
       el('p', { class: 'err', id: 'derr' }),
       el('div', { class: 'row' },
         el('button', { class: 'primary', onclick: submitAdd }, '建立'),
@@ -262,19 +284,47 @@
       const body = { name: $('#dn').value.trim() };
       const id = $('#di').value.trim();
       if (id) body.id = id;
+      body.enroll = $('#den').checked;
       const res = await api('POST', '/devices', body);
-      showKey(res.device.id, res.api_key, '裝置已建立');
+      if (res.enrollment) showCode(res.device.id, res.enrollment, '裝置已建立', false);
+      else showKey(res.device.id, res.api_key, '裝置已建立', res.key_expires_at);
       await refresh(); draw();
     } catch (e) { $('#derr').textContent = e.message; }
   }
 
-  function showKey(id, key, title) {
+  function showCode(id, enr, title, replacesKey) {
+    dlg.replaceChildren(
+      el('h2', {}, title),
+      el('p', { class: 'meta' }, `註冊碼只會顯示這一次，${fmtTime(enr.expires_at)} 前有效，只能使用一次。`),
+      el('label', {}, '裝置 ID'), el('pre', {}, id),
+      el('label', {}, '註冊碼'), el('pre', {}, enr.code),
+      el('label', {}, '板子用註冊碼換取金鑰'),
+      el('pre', {}, `POST ${location.origin}/api/v1/enroll\n{"device_id":"${id}","code":"<註冊碼>"}\n→ 回傳 api_key（存進板子的 NVS）`),
+      replacesKey ? el('p', { class: 'meta' }, '在板子完成註冊前，舊金鑰仍然有效；註冊完成後舊金鑰立刻失效。') : null,
+      el('div', { class: 'row' },
+        el('button', { class: 'primary', onclick: () => navigator.clipboard && navigator.clipboard.writeText(enr.code) }, '複製註冊碼'),
+        el('button', { onclick: closeDlg }, '完成')));
+    if (!dlg.open) dlg.showModal();
+  }
+
+  async function issueCode(d) {
+    const note = d.enrolled ? `為 ${d.name} 產生新的註冊碼？舊金鑰在板子完成註冊前仍有效，完成後會失效。` : `重新為 ${d.name} 產生註冊碼？先前未使用的註冊碼會作廢。`;
+    if (!confirm(note)) return;
+    try {
+      const enr = await api('POST', `/devices/${encodeURIComponent(d.id)}/enrollment`, {});
+      showCode(d.id, enr, '新的註冊碼', d.enrolled);
+      await refresh(); draw();
+    } catch (e) { handleErr(e); }
+  }
+
+  function showKey(id, key, title, expiresAt) {
     const host = location.hostname;
     dlg.replaceChildren(
       el('h2', {}, title),
       el('p', { class: 'meta' }, '金鑰只會顯示這一次，請現在複製並燒錄到 ESP32。'),
       el('label', {}, '裝置 ID'), el('pre', {}, id),
       el('label', {}, 'API Key（HTTP 用 X-API-Key；MQTT 密碼）'), el('pre', {}, key),
+      expiresAt ? el('p', { class: 'meta' }, `此金鑰 ${fmtTime(expiresAt)} 到期，板子可在到期前用 POST /api/v1/rotate 自動換新。`) : null,
       el('label', {}, '連線方式'),
       el('pre', {}, `HTTP  POST ${location.origin}/api/v1/events\n      header X-API-Key: <key>\nMQTT  ${host}:8883 (TLS)  user=${id}  pass=<key>`),
       el('div', { class: 'row' },
@@ -292,7 +342,7 @@
 
   async function rotate(d) {
     if (!confirm(`替換 ${d.name} 的金鑰？舊金鑰會立刻失效，裝置會被斷線。`)) return;
-    try { const r = await api('POST', `/devices/${encodeURIComponent(d.id)}/rotate-key`); showKey(d.id, r.api_key, '新金鑰'); await refresh(); draw(); }
+    try { const r = await api('POST', `/devices/${encodeURIComponent(d.id)}/rotate-key`); showKey(d.id, r.api_key, '新金鑰', r.key_expires_at); await refresh(); draw(); }
     catch (e) { handleErr(e); }
   }
 

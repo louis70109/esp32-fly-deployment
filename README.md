@@ -9,7 +9,8 @@ ESP32-C6 紅外線 / 開關機事件紀錄服務。一個 Node 程式同時提�
 | 管理前端 `/` | 看每台 ESP 的在線、運轉狀態、事件紀錄；新增 / 改名 / 換金鑰 / 刪除 |
 | SQLite | 存在 `DATA_DIR`（Fly 上是 volume） |
 
-每台裝置有自己的 API key（建立時只顯示一次，資料庫只存 SHA-256）。同一把 key 同時用在 HTTP 與 MQTT 密碼。
+每台裝置有自己的 API key（只顯示一次，資料庫只存 SHA-256）。同一把 key 同時用在 HTTP 與 MQTT 密碼。
+key 有生命週期：**一次性註冊碼**配發、**預設 90 天到期**、板子可**自行換 key**（見下方「金鑰生命週期」）。
 
 ## 本機執行
 
@@ -19,7 +20,7 @@ npm start      # 沒設 ADMIN_PASSWORD 時會產生一組並印在 console（帳
 npm test       # 端到端煙霧測試（HTTP + MQTT）
 ```
 
-環境變數：`ADMIN_USER`(admin)、`ADMIN_PASSWORD`（production 必填）、`SESSION_SECRET`（簽 session cookie，建議固定）、`SESSION_HOURS`(12)、`PORT`(8080)、`MQTT_PORT`(1883)、`DATA_DIR`、`EVENT_RETENTION_DAYS`(90)。
+環境變數：`KEY_TTL_DAYS`(90，0=新金鑰不過期)、`KEY_GRACE_HOURS`(24)、`ENROLL_TTL_HOURS`(24)、`AUTH_FAIL_LIMIT`(20)、`ADMIN_USER`(admin)、`ADMIN_PASSWORD`（production 必填）、`SESSION_SECRET`（簽 session cookie，建議固定）、`SESSION_HOURS`(12)、`PORT`(8080)、`MQTT_PORT`(1883)、`DATA_DIR`、`EVENT_RETENTION_DAYS`(90)。
 
 ## API
 
@@ -28,7 +29,9 @@ npm test       # 端到端煙霧測試（HTTP + MQTT）
 ```
 POST /api/v1/events     {"type":"ir_tx","payload":{...},"ts":1700000000000}   -> 201
 POST /api/v1/state      {"running":true}
-POST /api/v1/heartbeat
+POST /api/v1/heartbeat                                   -> {key_expires_at, should_rotate, server_time}
+POST /api/v1/rotate                                      -> {api_key, key_expires_at, old_key_valid_until}
+POST /api/v1/enroll     {"device_id","code"}  (不需 key)  -> 201 {api_key, key_expires_at}
 ```
 `type` 為 `[a-z0-9_.-]{1,40}`；`ts` 選填（毫秒，與伺服器差超過 24 小時就忽略）。
 `power_on` / `power_off` 事件會自動把裝置標成運轉中 / 未運轉。
@@ -37,13 +40,33 @@ POST /api/v1/heartbeat
 
 ```
 GET    /api/v1/devices
-POST   /api/v1/devices            {"name":"客廳冷氣","id":"esp-living"}  -> 回傳 api_key（僅此一次）
+POST   /api/v1/devices            {"name":"客廳冷氣","id":"esp-living","enroll":true}
+                                  enroll:true -> 回傳 enrollment.code（僅此一次），裝置尚無可用 key
+                                  省略 enroll -> 直接回傳 api_key（僅此一次）
+POST   /api/v1/devices/:id/enrollment  {"ttl_hours":24}  -> 為既有裝置產生新註冊碼（重新配發）
 PATCH  /api/v1/devices/:id        {"name":"..."}
 POST   /api/v1/devices/:id/rotate-key
 DELETE /api/v1/devices/:id
 GET    /api/v1/devices/:id/events?limit=100&type=ir_tx
 GET    /api/v1/events?limit=100
 ```
+
+## 金鑰生命週期
+
+```
+建立裝置(enroll:true) ──► 註冊碼(24h、單次) ──板子 POST /enroll──► api_key(90 天) ──快到期──► POST /rotate ──► 新 key
+```
+
+| 機制 | 行為 |
+|---|---|
+| 註冊碼 `en_...` | 24 小時（可設 1–168）、只能用一次、只存雜湊；對同一裝置再產生一組，舊的未使用碼立即作廢。`/enroll` 有失敗節流 |
+| key 到期 | 預設 90 天（`KEY_TTL_DAYS`）。過期：HTTP 回 401 `api key expired`、MQTT 拒絕連線、已連線的 session 會在 1 分鐘內被踢掉。**過期的 key 不能自己 rotate**，要由管理者產生註冊碼重新配發 |
+| 板子換 key | `POST /rotate`（用目前的 key）。舊 key 再有效 `KEY_GRACE_HOURS`(24h)；**新 key 第一次成功使用時舊 key 立即作廢** |
+| 換 key 回應遺失（斷電） | 板子還握著舊 key，重打 `/rotate` 即可取得新 key，不會被鎖死 |
+| 何時該換 | `POST /heartbeat` 回 `should_rotate:true`（剩餘壽命 ≤ 1/3，或正在用舊 key）；建議板子每天 heartbeat 一次 |
+| 舊版已存在的 key | 資料庫自動遷移，`key_expires_at` 為空＝**永不過期**，直到管理者換 key |
+| 管理者「換金鑰」 | 立刻換 key、舊 key 馬上失效、踢掉 MQTT、作廢未使用的註冊碼（給新 key 全新的 90 天） |
+| 重新配發（註冊碼） | 舊 key 在板子完成註冊前仍有效；完成註冊後舊 key 失效、MQTT 被踢 |
 
 ## MQTT
 
