@@ -1,5 +1,7 @@
 # Change `app` to a globally unique name before `fly launch --copy-config`.
-app = "esp-hub-louis"
+# The real app name is intentionally not committed (public repo). Deploy with: flyctl deploy --app "$FLY_APP" ...
+# Not yet verified: that --app overrides this placeholder. If flyctl complains, edit it locally and do not commit.
+app = "your-app-name"
 primary_region = "nrt"
 
 [build]

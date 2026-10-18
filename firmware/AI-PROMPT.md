@@ -25,7 +25,7 @@
 - 可使用的函式庫：PubSubClient、IRremoteESP8266、Preferences、HTTPClient、WiFiClientSecure（不要用 ArduinoJson，欄位自己用字串處理）
 - 腳位：IR 發射 GPIO【4】、IR 接收 GPIO【5】、開關按鈕 GPIO【9】（按下接 GND）
 - 要控制的設備與 IR 碼：【例如 NEC 0x20DF10EF 當作電源鍵；不確定就先用這個當占位】
-- 伺服器：HTTPS 與 MQTT 都在 esp-hub-louis.fly.dev（HTTPS 埠 443、MQTT over TLS 埠 8883）
+- 伺服器：HTTPS 與 MQTT 都在 your-app.fly.dev（HTTPS 埠 443、MQTT over TLS 埠 8883；請換成你自己的網域）
 
 ## 絕對不能做的事
 - 不可把 Wi-Fi 密碼、裝置 ID、註冊碼、API key 寫死在程式碼裡。
@@ -109,7 +109,7 @@
 請用 Arduino（ESP32-C6，arduino-esp32 3.x）寫一個最小可編譯的範例：
 開機後若 NVS（Preferences，命名空間 "hub"，鍵 "api_key"）沒有金鑰，就用註冊碼向伺服器換。
 
-- POST https://esp-hub-louis.fly.dev/api/v1/enroll，JSON：{"device_id":"<id>","code":"<註冊碼>"}
+- POST https://your-app.fly.dev/api/v1/enroll（請換成你自己的網域），JSON：{"device_id":"<id>","code":"<註冊碼>"}
 - 成功回 201：{"api_key":"dk_...","key_expires_at":...}；401 代表註冊碼錯誤、過期或已用過
 - 拿到 api_key 後存進 NVS，之後用標頭 X-API-Key 呼叫 POST /api/v1/events，body {"type":"boot"}，成功回 201
 - 使用 HTTPClient + WiFiClientSecure（先用 setInsecure()，註解標明正式版要改 setCACert）
@@ -137,6 +137,6 @@
 ## 使用提醒
 
 - **裝置 ID 與註冊碼**：管理頁面按「新增裝置」取得（註冊碼 24 小時內有效、只能用一次）。
-- **本機測試**：把 `esp-hub-louis.fly.dev` 換成電腦的區網 IP，並要求 AI 加上 `SET host / tls / http_port / mqtt_port` 指令
+- **本機測試**：把 `your-app.fly.dev` 換成電腦的區網 IP，並要求 AI 加上 `SET host / tls / http_port / mqtt_port` 指令
   （本機是 HTTP 8080、MQTT 1883、不用 TLS）。
 - 想要更完整的實作，可以直接使用 [esp32c6_ir_hub.ino](esp32c6_ir_hub/esp32c6_ir_hub.ino)，它已經包含上面版本 A 的全部功能。

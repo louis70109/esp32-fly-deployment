@@ -268,7 +268,7 @@
     const res = await fetch('/ai-prompt.txt');
     if (!res.ok) throw new Error('讀不到 prompt 檔案');
     let text = await res.text();
-    if (location.protocol === 'https:') text = text.split('esp-hub-louis.fly.dev').join(location.hostname);
+    if (location.protocol === 'https:') text = text.split('your-app.fly.dev').join(location.hostname);
     promptCache = text;
     return text;
   }

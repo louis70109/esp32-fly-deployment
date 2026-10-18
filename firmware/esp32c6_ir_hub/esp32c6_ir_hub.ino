@@ -30,7 +30,7 @@
 
 // ------------------------------------------------------------ build-time defaults
 // Everything here can be overridden at runtime from the serial console (stored in NVS).
-#define DEFAULT_HOST       "esp-hub-louis.fly.dev"
+#define DEFAULT_HOST       "your-app.fly.dev"   // placeholder: set yours with the serial command  SET host <name>.fly.dev
 #define DEFAULT_HTTP_PORT  443
 #define DEFAULT_MQTT_PORT  8883
 #define DEFAULT_TLS        true

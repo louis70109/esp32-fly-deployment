@@ -7,7 +7,7 @@
 - 可使用的函式庫：PubSubClient、IRremoteESP8266、Preferences、HTTPClient、WiFiClientSecure（不要用 ArduinoJson，欄位自己用字串處理）
 - 腳位：IR 發射 GPIO【4】、IR 接收 GPIO【5】、開關按鈕 GPIO【9】（按下接 GND）
 - 要控制的設備與 IR 碼：【例如 NEC 0x20DF10EF 當作電源鍵；不確定就先用這個當占位】
-- 伺服器：HTTPS 與 MQTT 都在 esp-hub-louis.fly.dev（HTTPS 埠 443、MQTT over TLS 埠 8883）
+- 伺服器：HTTPS 與 MQTT 都在 your-app.fly.dev（HTTPS 埠 443、MQTT over TLS 埠 8883；請換成你自己的網域）
 
 ## 絕對不能做的事
 - 不可把 Wi-Fi 密碼、裝置 ID、註冊碼、API key 寫死在程式碼裡。

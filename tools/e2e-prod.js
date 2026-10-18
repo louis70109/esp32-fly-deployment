@@ -2,19 +2,19 @@
 // End-to-end check of a DEPLOYED esp-hub: enrollment code -> key -> events -> MQTT over TLS -> rotate -> re-provision.
 // Creates one test device and always deletes it again.
 //
-//   E2E_ADMIN_PASSWORD='...' node tools/e2e-prod.js
+//   E2E_HOST="$FLY_HOST" E2E_ADMIN_PASSWORD='...' node tools/e2e-prod.js
 //
-// Env: E2E_ADMIN_PASSWORD (required), E2E_ADMIN_USER (default admin), E2E_HOST (default esp-hub-louis.fly.dev).
+// Env: E2E_ADMIN_PASSWORD (required), E2E_HOST (required, e.g. <app>.fly.dev), E2E_ADMIN_USER (default admin).
 // Needs the dev dependency `mqtt` (npm install). The password is never printed or stored.
 const https = require('https');
 const assert = require('assert');
 const mqtt = require('mqtt');
 
-const HOST = process.env.E2E_HOST || 'esp-hub-louis.fly.dev';
+const HOST = process.env.E2E_HOST;
 const USER = process.env.E2E_ADMIN_USER || 'admin';
 const PASSWORD = process.env.E2E_ADMIN_PASSWORD;
 const ID = 'e2e-enroll';
-if (!PASSWORD) { console.error('Set E2E_ADMIN_PASSWORD'); process.exit(2); }
+if (!PASSWORD || !HOST) { console.error('Set E2E_ADMIN_PASSWORD and E2E_HOST (the Fly host name is not stored in this public repo)'); process.exit(2); }
 
 let cookie = '';
 const request = (method, path, headers, body) => new Promise((resolve, reject) => {

@@ -22,13 +22,19 @@ npm test                              # 必須看到 "38 checks passed" 與 "4 c
   本機伺服器預設 HTTP `8080`、MQTT（明文）`1883`，**不是** Fly 上的 TLS 8883。
 
 ### 0.2 確認 Fly 與線上狀態
+**Fly 的 app 名稱與網址不寫在這個公開 repo**（使用者明確要求不要公開）。向使用者取得，或登入 Fly 後自己查：
+
 ```bash
-flyctl auth whoami                    # 應為 louis70109@gmail.com；否則請使用者自己執行 flyctl auth login
-flyctl status --app esp-hub-louis
-curl https://esp-hub-louis.fly.dev/healthz    # {"ok":true}
+flyctl auth login                     # 新電腦由使用者自己登入（用使用者的 Fly 帳號）
+flyctl apps list                      # 帳號裡 esp-hub 類的 app 只有一個，名稱就是 FLY_APP
+export FLY_APP=<上面查到的名稱>        # PowerShell：$env:FLY_APP = "<名稱>"
+export FLY_HOST="$FLY_APP.fly.dev"
+flyctl status --app "$FLY_APP"
+curl "https://$FLY_HOST/healthz"      # {"ok":true}
 ```
+下文與 README、韌體說明裡的 `$FLY_APP` / `$FLY_HOST` / `your-app.fly.dev` 都指這組值。
 - Windows 上 PowerShell 可能找不到 `fly`，用 `flyctl`。
-- **管理者密碼不在任何檔案裡**，使用者自己保管。忘了就重設：`flyctl secrets set ADMIN_PASSWORD="新密碼" --app esp-hub-louis`（會自動重啟）。
+- **管理者密碼不在任何檔案裡**，使用者自己保管。忘了就重設：`flyctl secrets set ADMIN_PASSWORD="新密碼" --app "$FLY_APP"`（會自動重啟）。
 - 線上已是含註冊碼 / 到期 / rotate 的版本，可直接用 ESP 實測。要測「到期」類行為又不想等 90 天，改用本機伺服器並設 `KEY_TTL_DAYS=0.002`
   （約 3 分鐘；區網內讓板子連電腦的 IP:1883，韌體要有可切換的 host / port / 是否 TLS）。
 
@@ -74,9 +80,9 @@ curl https://esp-hub-louis.fly.dev/healthz    # {"ok":true}
 
 | 項目 | 內容 |
 |---|---|
-| Fly app | `esp-hub-louis`，region `nrt`，單一機器 |
-| 前端 / API | https://esp-hub-louis.fly.dev |
-| MQTT | `esp-hub-louis.fly.dev:8883`（TLS，Fly 終結，轉到容器 1883） |
+| Fly app | 名稱不寫在公開 repo（取得方式見 §0.2），region `nrt`，單一機器 |
+| 前端 / API | `https://$FLY_HOST` |
+| MQTT | `$FLY_HOST:8883`（TLS，Fly 終結，轉到容器 1883） |
 | GitHub | https://github.com/louis70109/esp32-fly-deployment（`main`） |
 | 文章（GitHub Pages） | https://nijialin.com/esp32-fly-deployment/ （原始檔在 `site/`，推到 `main` 且 `site/**` 有變更時由 `.github/workflows/pages.yml` 自動部署；帳號有綁自訂網域，所以不是 `louis70109.github.io`） |
 | 儲存 | SQLite，Fly volume `hub_data` 掛在 `/data`（1 GB） |
@@ -207,13 +213,13 @@ MQTT  devices/<id>/state | event | status(LWT) ; 訂閱 devices/<id>/cmd（目�
 
 **部署新版的標準流程**（照做，這次就是這樣做的）：
 1. `git push`；`npm test` 全過。
-2. 確認 volume 有近期快照：`flyctl volumes snapshots list <volume-id> --app esp-hub-louis`（**要用 volume ID，不是名稱**；ID 用 `flyctl volumes list --app esp-hub-louis` 查）。
-   沒有或太舊就 `flyctl volumes snapshots create <volume-id> --app esp-hub-louis`，等狀態從 `running` 變 `created` 再繼續。
-3. `flyctl deploy --app esp-hub-louis --remote-only --ha=false`；看 `flyctl logs --app esp-hub-louis --no-tail`
+2. 確認 volume 有近期快照：`flyctl volumes snapshots list <volume-id> --app "$FLY_APP"`（**要用 volume ID，不是名稱**；ID 用 `flyctl volumes list --app "$FLY_APP"` 查）。
+   沒有或太舊就 `flyctl volumes snapshots create <volume-id> --app "$FLY_APP"`，等狀態從 `running` 變 `created` 再繼續。
+3. `flyctl deploy --app "$FLY_APP" --remote-only --ha=false`；看 `flyctl logs --app "$FLY_APP" --no-tail`
    （啟動瞬間 health check 失敗一次是正常的，之後會 passing）。
-4. `curl https://esp-hub-louis.fly.dev/healthz`，再對線上跑一次端到端（建測試裝置 → 驗證 → 刪除）：
+4. `curl https://$FLY_HOST/healthz`，再對線上跑一次端到端（建測試裝置 → 驗證 → 刪除）：
    ```bash
-   E2E_ADMIN_PASSWORD='管理者密碼' node tools/e2e-prod.js     # 需要先 npm install（用到 devDependency mqtt）
+   E2E_HOST="$FLY_HOST" E2E_ADMIN_PASSWORD='管理者密碼' node tools/e2e-prod.js     # 需要先 npm install（用到 devDependency mqtt）
    ```
    密碼由使用者提供，只放環境變數，不要寫進檔案或指令歷史以外的地方。成功會印出 `production enrollment flow OK` 並刪除測試裝置。
 5. 更新本文件的部署紀錄（§2.1）與變更紀錄，commit、push。
@@ -223,12 +229,12 @@ MQTT  devices/<id>/state | event | status(LWT) ; 訂閱 devices/<id>/cmd（目�
 ```bash
 npm install && npm start        # 本機；沒設 ADMIN_PASSWORD 會產生一組並印在 console（帳號 admin）
 npm test                        # 端到端煙霧測試（HTTP + MQTT，用暫存資料庫）
-flyctl deploy --app esp-hub-louis --remote-only --ha=false
-flyctl logs --app esp-hub-louis
+flyctl deploy --app "$FLY_APP" --remote-only --ha=false
+flyctl logs --app "$FLY_APP"
 ```
 
 - 環境：使用者機器是 **Windows 11**，本機 **Node 16.17**（沒有全域 `fetch`，測試用 `http` 模組自製了 shim）。
-  PowerShell 找不到 `fly`，要用 `flyctl`（WinGet 安裝；Git Bash 要用完整路徑）。已登入 Fly 帳號 `louis70109@gmail.com`。
+  PowerShell 找不到 `fly`，要用 `flyctl`（WinGet 安裝；Git Bash 要用完整路徑）。已登入 Fly 帳號 `使用者的 Fly 帳號`。
 - 在 Git Bash 用 `curl -d` 傳中文會被編碼成 `????`，這是 shell 問題不是伺服器問題；測中文請用 Node。
 - `fly.toml`：`auto_stop_machines = "off"` 是必要的，機器休眠會讓所有裝置顯示離線。
 - 部署新版時密碼 / `SESSION_SECRET` 不變；`SESSION_SECRET` 換掉會讓所有人登出。
@@ -236,10 +242,7 @@ flyctl logs --app esp-hub-louis
 
 ## 7. 變更紀錄
 - 2026-10-19：AI Prompt 部署到 Fly（`0dca2f6`）並通過 `tools/e2e-prod.js`。
-- 2026-10-19：使用者要求**不要把 Fly 的網址放在公開位置**。已把 GitHub repo description 中的 Fly 網址移除（只留文章網址）。
-  repo 是**公開**的，Fly 主機名稱仍出現在 `docs/PRD.md`、`fly.toml`、`firmware/AI-PROMPT.md`、`firmware/esp32c6_ir_hub/esp32c6_ir_hub.ino`、
-  `public/ai-prompt.txt`（也會被 Pages 發佈到文章網站）、`public/index.html`、`tools/e2e-prod.js`，git 歷史裡也有。
-  **尚未清除，等使用者決定**：①全部換成占位字；②維持現狀（網址本身受登入保護，API 需要 key）。新增任何公開內容時請先不要寫入 Fly 網址。
+- 2026-10-19：依使用者要求，從公開 repo 移除 Fly 的 app 名稱與網址：GitHub description、PRD、`fly.toml`、韌體預設主機、AI prompt、管理頁面、e2e 腳本都改成占位字，交接改為「登入 Fly 後 `flyctl apps list` 查」（§0.2）。**git 歷史裡仍有舊內容**（要清除需改寫歷史並 force-push，使用者未要求，未做）。正式站仍在跑舊檔案，下次部署才會同步。`fly.toml` 的 app 現在是占位字，部署靠 `--app "$FLY_APP"` 覆蓋，**這個覆蓋行為尚未實測**；若 `flyctl deploy` 報錯，在本機暫時把 `fly.toml` 的 app 改成實際名稱，不要 commit。
 - 2026-10-19：新增 AI Prompt（`public/ai-prompt.txt`、管理頁面按鈕、文章頁區塊、`test/prompt.js` 防漂移）；複製按鈕加上 `execCommand` 備援與成功 / 失敗提示；
   repo description 放入服務與文章網址。管理頁面變更**尚未部署到 Fly**。
 - 2026-10-19：部署註冊碼對話框 `null` 修正（部署前建快照 `vs_geY581XZae3sxmXlR8J`）；新增 `tools/e2e-prod.js` 作為線上端到端驗證，已對正式站跑過並通過。
