@@ -58,6 +58,7 @@
   .login { max-width: 360px; margin: 18vh auto 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 22px; }
   .login h1 { margin: 0 0 14px; font-size: 18px; }
   .err { color: var(--bad); min-height: 1.4em; margin: 8px 0 0; font-size: 14px; }
+  textarea { font: 12.5px/1.55 ui-monospace, Consolas, monospace; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); width: 100%; resize: vertical; margin: 8px 0; }
   .empty { text-align: center; color: var(--muted); padding: 40px 0; }
   label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 13px; }
 </style>
@@ -161,6 +162,7 @@
     app.replaceChildren(
       el('header', {},
         el('h1', {}, 'ESP 裝置管理'),
+        el('button', { onclick: openPrompt }, 'AI Prompt'),
         el('button', { class: 'primary', onclick: openAdd }, '＋ 新增裝置'),
         el('button', { onclick: logout }, '登出')),
       el('main', {},
@@ -259,6 +261,54 @@
   }
 
   // ---------------------------------------------------------------- dialogs
+  // The prompt lives in /ai-prompt.txt (single source, also published with the article).
+  let promptCache = null;
+  async function getPrompt() {
+    if (promptCache) return promptCache;
+    const res = await fetch('/ai-prompt.txt');
+    if (!res.ok) throw new Error('讀不到 prompt 檔案');
+    let text = await res.text();
+    if (location.protocol === 'https:') text = text.split('esp-hub-louis.fly.dev').join(location.hostname);
+    promptCache = text;
+    return text;
+  }
+  function flash(btn, text) {
+    const old = btn.textContent;
+    btn.textContent = text;
+    setTimeout(() => { btn.textContent = old; }, 2500);
+  }
+  // navigator.clipboard needs a secure context and permission; fall back to execCommand, report honestly if both fail.
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* try the fallback */ }
+    const ta = el('textarea', { readonly: 'readonly', style: 'position:fixed;left:-9999px;top:0;' }, text);
+    (dlg.open ? dlg : document.body).append(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    return ok;
+  }
+  async function copyPrompt(btn) {
+    let ok = false;
+    try { ok = await copyText(await getPrompt()); } catch { ok = false; }
+    flash(btn, ok ? '已複製 ✓' : '複製失敗，請到右上角「AI Prompt」手動複製');
+  }
+  async function copyValue(btn, value) {
+    flash(btn, (await copyText(value)) ? '已複製 ✓' : '複製失敗，請手動選取上方文字');
+  }
+  async function openPrompt() {
+    let text;
+    try { text = await getPrompt(); } catch (e) { return alert(e.message); }
+    fill(dlg,
+      el('h2', {}, '給 AI 的 prompt'),
+      el('p', { class: 'meta' }, '貼給 ChatGPT / Claude 等 AI，請它產生 ESP32 韌體。Wi-Fi 密碼、裝置 ID、註冊碼不要貼給 AI：這份 prompt 已要求韌體改用序列埠指令輸入。'),
+      el('textarea', { readonly: 'readonly', rows: '14', id: 'ptxt' }, text),
+      el('div', { class: 'row' },
+        el('button', { class: 'primary', onclick: (e) => copyPrompt(e.target) }, '複製 prompt'),
+        el('button', { onclick: closeDlg }, '關閉')));
+    if (!dlg.open) dlg.showModal();
+  }
+
   // Native replaceChildren() turns a null child into the text "null"; drop empty slots first.
   const fill = (node, ...kids) => node.replaceChildren(...kids.filter((k) => k != null && k !== false));
   function closeDlg() { dlg.close(); }
@@ -303,8 +353,10 @@
       el('label', {}, '板子用註冊碼換取金鑰'),
       el('pre', {}, `POST ${location.origin}/api/v1/enroll\n{"device_id":"${id}","code":"<註冊碼>"}\n→ 回傳 api_key（存進板子的 NVS）`),
       replacesKey ? el('p', { class: 'meta' }, '在板子完成註冊前，舊金鑰仍然有效；註冊完成後舊金鑰立刻失效。') : null,
+      el('p', { class: 'meta' }, '想請 AI 幫你寫韌體？按「複製 AI Prompt」貼給它。prompt 不含你的註冊碼，Wi-Fi 密碼與註冊碼請在燒錄後從序列埠輸入。'),
       el('div', { class: 'row' },
-        el('button', { class: 'primary', onclick: () => navigator.clipboard && navigator.clipboard.writeText(enr.code) }, '複製註冊碼'),
+        el('button', { class: 'primary', onclick: (e) => copyValue(e.target, enr.code) }, '複製註冊碼'),
+        el('button', { onclick: (e) => copyPrompt(e.target) }, '複製 AI Prompt'),
         el('button', { onclick: closeDlg }, '完成')));
     if (!dlg.open) dlg.showModal();
   }
@@ -330,7 +382,8 @@
       el('label', {}, '連線方式'),
       el('pre', {}, `HTTP  POST ${location.origin}/api/v1/events\n      header X-API-Key: <key>\nMQTT  ${host}:8883 (TLS)  user=${id}  pass=<key>`),
       el('div', { class: 'row' },
-        el('button', { class: 'primary', onclick: () => navigator.clipboard && navigator.clipboard.writeText(key) }, '複製金鑰'),
+        el('button', { class: 'primary', onclick: (e) => copyValue(e.target, key) }, '複製金鑰'),
+        el('button', { onclick: (e) => copyPrompt(e.target) }, '複製 AI Prompt'),
         el('button', { onclick: closeDlg }, '完成')));
     if (!dlg.open) dlg.showModal();
   }

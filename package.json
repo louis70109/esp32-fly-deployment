@@ -6,7 +6,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node test/smoke.js && node test/migrate.js"
+    "test": "node test/smoke.js && node test/migrate.js && node test/prompt.js"
   },
   "engines": { "node": ">=16" },
   "dependencies": {

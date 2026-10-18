@@ -86,6 +86,15 @@ curl https://esp-hub-louis.fly.dev/healthz    # {"ok":true}
 已驗證（線上端到端 + 本機 `npm test`）：HTTP 事件上傳、MQTT over TLS 上線/離線偵測、
 管理登入、錯誤密碼 / 偽造 cookie / 舊金鑰皆被拒。
 
+### 2.0.1 「AI Prompt」功能（2026-10-19，**程式已推送、管理頁面尚未部署到 Fly**）
+給使用者貼給 AI 產生韌體的 prompt，單一正本是 `public/ai-prompt.txt`：
+- 管理頁面：右上角「AI Prompt」按鈕（檢視 + 複製），註冊碼 / 金鑰對話框也有「複製 AI Prompt」。複製有 `execCommand` 備援，失敗會明說。
+- 文章頁：「丟給 AI 幫你寫韌體」區塊。Pages 工作流程在部署時把 `public/ai-prompt.txt` 複製成 `site/ai-prompt.txt`（該檔已 gitignore）。
+- `firmware/AI-PROMPT.md` 版本 A 必須與 `public/ai-prompt.txt` 完全一致，`npm test` 的 `test/prompt.js` 會檢查（改 prompt 請兩處同步）。
+- 已驗證：本機瀏覽器真實點擊「複製」顯示「已複製 ✓」（腳本模擬的點擊會被瀏覽器拒絕，不代表壞掉）。
+- **未驗證**：prompt 實際讓 AI 產生的韌體能不能編譯——沒有人跑過。
+- 正式站要等下次 `flyctl deploy`（照 §6 流程）才會有管理頁面的按鈕；文章頁推送後由 Pages 自動更新。
+
 ### 2.0 註冊碼對話框 `null` 字樣（已修正並已部署）
 2026-10-18 在瀏覽器實際操作「新增裝置 → 註冊碼」時發現：對話框按鈕上方多出一行字面的 `null`（原生 `replaceChildren()` 會把 `null` 轉成文字）。
 已在 `public/index.html` 修正（改用 `fill()` 過濾空值），本機驗證消失；**已於 2026-10-19（台灣時間）部署到 Fly**，
@@ -224,6 +233,8 @@ flyctl logs --app esp-hub-louis
 - 安全守則：不要把 ADMIN 密碼、裝置 API key 寫進 repo、文件或 commit。
 
 ## 7. 變更紀錄
+- 2026-10-19：新增 AI Prompt（`public/ai-prompt.txt`、管理頁面按鈕、文章頁區塊、`test/prompt.js` 防漂移）；複製按鈕加上 `execCommand` 備援與成功 / 失敗提示；
+  repo description 放入服務與文章網址。管理頁面變更**尚未部署到 Fly**。
 - 2026-10-19：部署註冊碼對話框 `null` 修正（部署前建快照 `vs_geY581XZae3sxmXlR8J`）；新增 `tools/e2e-prod.js` 作為線上端到端驗證，已對正式站跑過並通過。
 - 2026-10-18：新增完整韌體範例（NVS、序列埠佈建、enroll / heartbeat / rotate、過期處理）與 firmware/README.md，**未編譯、未上板**；
   修正註冊碼對話框的 `null` 字樣（未部署）；新增 GitHub Pages 文章（`site/`，由 `.github/workflows/pages.yml` 部署）。

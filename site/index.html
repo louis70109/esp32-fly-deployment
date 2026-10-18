@@ -56,6 +56,12 @@
   .diagram .box { fill: var(--card); stroke: var(--muted); stroke-width: 1.4; }
   .diagram .fly { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.6; }
   .diagram .line { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  details.prompt { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 4px 16px 14px; margin: 18px 0; }
+  details.prompt summary { cursor: pointer; padding: 10px 0; font-weight: 600; }
+  details.prompt pre { max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+  button.copy { font: inherit; font-size: 15px; padding: 7px 16px; border-radius: 8px; border: 1px solid var(--accent);
+                background: var(--accent); color: #fff; cursor: pointer; }
+  @media (prefers-color-scheme: dark) { button.copy { color: #14161b; } }
   .toc { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 20px; margin: 0 0 8px; font-size: 15px; }
   .toc ol { margin: 6px 0; }
   .toc a { color: var(--text); text-decoration: none; }
@@ -87,6 +93,7 @@
     <li><a href="#key">Key 怎麼發才不痛苦</a></li>
     <li><a href="#rotate">Key 會過期，板子自己換</a></li>
     <li><a href="#ui">管理頁面長這樣</a></li>
+    <li><a href="#ai">丟給 AI 幫你寫韌體</a></li>
     <li><a href="#deploy">部署到 Fly.io</a></li>
     <li><a href="#pit">踩坑紀錄</a></li>
     <li><a href="#todo">還沒做完的事</a></li>
@@ -199,6 +206,18 @@
 <figure><img src="img/05-enroll-code.jpg" alt="註冊碼對話框，顯示裝置 ID、註冊碼與換取金鑰的 API 範例" loading="lazy"><figcaption>註冊碼只顯示這一次，24 小時內有效</figcaption></figure>
 <figure class="phone"><img src="img/06-mobile.jpg" alt="手機版畫面" loading="lazy"><figcaption>手機也能看（出門在外想確認板子還活著的時候很實用）</figcaption></figure>
 
+<h2 id="ai">🤖 丟給 AI 幫你寫韌體</h2>
+<p>前面講的註冊、換 Key、MQTT，如果你不想自己一行一行刻，其實可以把規格整包丟給 AI，請它幫你產生韌體。我把需要的 prompt 準備好了，直接複製就能用。</p>
+<p>這份 prompt 有個重點：它要求 AI 把 <strong>Wi-Fi 密碼、裝置 ID、註冊碼</strong>做成序列埠指令，燒錄之後自己在監控視窗輸入。也就是說，這些東西<strong>不需要貼進跟 AI 的對話裡</strong>。</p>
+<details class="prompt" id="promptBox">
+  <summary>展開完整 prompt（點開後可複製）</summary>
+  <p><button class="copy" id="copyPrompt" type="button">複製 prompt</button> <span class="meta" id="copyState"></span></p>
+  <pre><code id="promptText">載入中…</code></pre>
+</details>
+<div class="tip">
+  <p><b class="label">提醒：</b>AI 產生的程式沒有人替它編譯過，請自己編譯、上板測試，編譯錯誤可以直接貼回去請它修。另外還有精簡版（只做「用註冊碼換金鑰」）和給 Claude Code 這類能讀 repo 的代理版，放在 <a href="https://github.com/louis70109/esp32-fly-deployment/blob/main/firmware/AI-PROMPT.md">firmware/AI-PROMPT.md</a>。</p>
+</div>
+
 <h2 id="deploy">🚀 部署到 Fly.io</h2>
 <p>幾個重點設定：</p>
 <ul>
@@ -250,5 +269,31 @@ fly deploy --remote-only --ha=false</code></pre>
 </footer>
 
 </div>
+<script>
+(() => {
+  const box = document.getElementById('promptText');
+  const state = document.getElementById('copyState');
+  let text = '';
+  fetch('ai-prompt.txt').then((r) => { if (!r.ok) throw new Error(r.status); return r.text(); })
+    .then((t) => { text = t; box.textContent = t; })
+    .catch(() => {
+      box.textContent = '載入失敗，請直接到 GitHub 複製：https://github.com/louis70109/esp32-fly-deployment/blob/main/public/ai-prompt.txt';
+    });
+  document.getElementById('copyPrompt').addEventListener('click', async () => {
+    if (!text) { state.textContent = '還沒載入完成'; return; }
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; }
+    catch {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.cssText = 'position:fixed;left:-9999px;top:0;';
+      document.body.append(ta); ta.select();
+      try { ok = document.execCommand('copy'); } catch { ok = false; }
+      ta.remove();
+    }
+    state.textContent = ok ? '已複製 ✓' : '複製失敗，請手動選取下方文字';
+    setTimeout(() => { state.textContent = ''; }, 2500);
+  });
+})();
+</script>
 </body>
 </html>
