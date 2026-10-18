@@ -46,10 +46,11 @@ curl https://esp-hub-louis.fly.dev/healthz    # {"ok":true}
 4. **IR 發射 LED 與接收器的實際接法與腳位**（草稿用 GPIO4 發射、GPIO5 接收、GPIO9 按鈕，只是占位）。
 5. **Wi-Fi 環境**（2.4GHz？有沒有 captive portal？）與板子要放的位置（電源是否穩定，決定斷電恢復的重要性）。
 
-### 0.5 現有韌體草稿的狀態
-`firmware/esp32c6_ir_hub/esp32c6_ir_hub.ino` **只是草稿，從未編譯、從未上板**：
-把 `DEVICE_ID` / `API_KEY` 寫死、**沒有** NVS、**沒有** `/enroll`、`/rotate`、`/heartbeat` 流程、`HUB_HOST` 已填成 `esp-hub-louis.fly.dev`。
-可以參考它的結構（Wi-Fi、NTP、MQTT Last Will、事件重送佇列），但 P0 要求的行為要重寫。
+### 0.5 現有韌體範例的狀態
+`firmware/esp32c6_ir_hub/esp32c6_ir_hub.ino` 是**寫好但從未編譯、從未上板**的範例（使用者明確要求「先不要自己編譯」，所以沒有安裝任何工具鏈）。
+它已經包含：憑證存 NVS、序列埠佈建指令、`/enroll` 首次註冊、每日 `/heartbeat`、`should_rotate` 時 `/rotate`（新 key 存 NVS 並讀回確認後才切換）、
+過期 / 被撤銷的處理、MQTT（含 Last Will）、IR 發射與接收、事件重送佇列。使用方式與已知缺口見 [firmware/README.md](../firmware/README.md)。
+**接手的第一件事是在新電腦上編譯它**，修掉編譯錯誤後上板驗證，並把結果寫回本文件。
 
 ### 0.6 建議的開場提示（使用者貼進新 session）
 > 請先讀 `docs/README.md` 與 `docs/PRD.md`，照 §0 的步驟驗證環境，然後先問我 §0.4 的問題，再接著做 §5 的 P0（ESP32-C6 韌體）。
@@ -84,6 +85,10 @@ curl https://esp-hub-louis.fly.dev/healthz    # {"ok":true}
 已驗證（線上端到端 + 本機 `npm test`）：HTTP 事件上傳、MQTT over TLS 上線/離線偵測、
 管理登入、錯誤密碼 / 偽造 cookie / 舊金鑰皆被拒。
 
+### 2.0 UI 修正尚未部署
+2026-10-18 在瀏覽器實際操作「新增裝置 → 註冊碼」時發現：對話框按鈕上方多出一行字面的 `null`（原生 `replaceChildren()` 會把 `null` 轉成文字）。
+已在 `public/index.html` 修正（改用 `fill()` 過濾空值），本機驗證消失；**線上仍是舊版，下次 `flyctl deploy` 才會生效**。
+
 ### 2.1 金鑰生命週期（2026-10-18 完成，**已部署並在線上驗證**）
 - **部署**：2026-10-18，程式為 commit `ac23016`。部署前手動建立 volume 快照 `vs_BYPBxn2KOYMSe0ggRemo`（保留 5 天；volume 當時才建立 2 小時，每日自動快照尚未產生）。
   正式資料庫的遷移在啟動時自動完成，log 無錯誤。
@@ -91,7 +96,8 @@ curl https://esp-hub-louis.fly.dev/healthz    # {"ok":true}
 - **線上端到端**（部署後執行，測完已刪除測試裝置）：以 `enroll:true` 建立裝置 → `/enroll` 換 key（到期日 90.0 天）→ 註冊碼不可重用 →
   事件上傳 → heartbeat（`should_rotate:false`）→ MQTT over TLS 連線後在線 + 運轉中 → `/rotate`（寬限期內舊 key 可用、新 key 一用舊 key 即作廢）→
   管理者重新配發註冊碼並使舊 key 失效。全部通過。
-- **未驗證**：「新增裝置」對話框的「註冊碼」勾選流程只有 API 測試，沒在瀏覽器手動點過；過期掃描（每分鐘踢掉已連線 session）只在本機測試過，線上沒等到真的過期。
+- **瀏覽器驗證**：「新增裝置 → 註冊碼 → 重新產生註冊碼」在本機示範資料上實際點過（因此發現上面 §2.0 的 `null` 問題）；正式站沒有登入操作過。
+- **未驗證**：過期掃描（每分鐘踢掉已連線 session）只在本機測試過，線上沒等到真的過期。
 
 已實作：一次性註冊碼 `/enroll`、預設 90 天到期、板子自行 `/rotate`（含 24h 寬限與斷電恢復）、
 `/heartbeat` 回報 `should_rotate`、MQTT 過期 session 掃描（每分鐘）、前端的「註冊碼」按鈕 / 到期顯示 / 「待註冊」標籤。
@@ -147,8 +153,8 @@ MQTT  devices/<id>/state | event | status(LWT) ; 訂閱 devices/<id>/cmd（目�
 
 ## 5. 待辦（依優先順序）
 
-### P0 — ESP32-C6 韌體（**目前不存在可用的韌體**）
-`firmware/esp32c6_ir_hub/esp32c6_ir_hub.ino` 只是**未編譯、未在實機驗證的草稿**，把 ID/key/Wi-Fi 寫死在程式裡。需要做成正式韌體：
+### P0 — ESP32-C6 韌體（**範例已寫好，但從未編譯、從未上板，所以還不能算完成**）
+`firmware/esp32c6_ir_hub/esp32c6_ir_hub.ino` 已依下列需求寫出範例（見 §0.5、firmware/README.md），要做的是**編譯、修錯、實機驗證、補缺口**。需求如下：
 
 1. **憑證放 NVS，不寫死在程式碼**：所有板子燒同一份韌體；`device_id`、`api_key`、Wi-Fi SSID/密碼存在 NVS（`Preferences`），
    約 100 bytes、不占程式空間，更新韌體不會洗掉。
@@ -162,8 +168,8 @@ MQTT  devices/<id>/state | event | status(LWT) ; 訂閱 devices/<id>/cmd（目�
      ④拔電重插後自動重連且狀態正確；⑤到期前自動換 key 且不中斷。
    - 驗收：用本機伺服器把 `KEY_TTL_DAYS` 設成很小的值（例如 0.002 ≈ 3 分鐘），確認板子能自動換 key 且不中斷上傳事件。
 2. **兩種寫入方式**（使用者的核心要求：「最有效率給板子、不占空間」）：
-   - 序列埠一次性設定：NVS 沒有 key 時等待 `SET <id> <key>`（以及 Wi-Fi）指令，存入後重啟。
-   - 批次燒錄腳本（`tools/provision.*`）：登入拿 cookie → `POST /api/v1/devices {enroll:true}` 建立裝置並拿到**註冊碼** →
+   - 序列埠一次性設定：**範例已實作**（`WIFI` / `ENROLL` / `KEY` / `SET` / `STATUS` / `WIPE`），存入 NVS 後自動運作。
+   - 批次燒錄腳本（**尚未實作**，`tools/provision.*`）：登入拿 cookie → `POST /api/v1/devices {enroll:true}` 建立裝置並拿到**註冊碼** →
      用 `nvs_partition_gen.py` 產生含 `device_id` + `enroll_code`（與 Wi-Fi）的 `nvs.bin` → `esptool` 只寫 NVS 分區。**位址與大小以板子實際的 partition table 為準**：Arduino-ESP32 預設是 0x9000、0x5000（20 KB），ESP-IDF 預設是 0x6000（24 KB）；先用 `esptool` / 專案的 `partitions.csv` 確認再產生 `nvs.bin`。
      因為燒進板子的是 24 小時內有效、單次的註冊碼而不是長效 key，批次檔案外流的風險很低；板子首次開機後自己換到 key。
      若不想用註冊碼，也可建立裝置時省略 `enroll`，直接把 `api_key` 寫進 NVS（只顯示一次）。
@@ -207,6 +213,8 @@ flyctl logs --app esp-hub-louis
 - 安全守則：不要把 ADMIN 密碼、裝置 API key 寫進 repo、文件或 commit。
 
 ## 7. 變更紀錄
+- 2026-10-18：新增完整韌體範例（NVS、序列埠佈建、enroll / heartbeat / rotate、過期處理）與 firmware/README.md，**未編譯、未上板**；
+  修正註冊碼對話框的 `null` 字樣（未部署）；新增 GitHub Pages 文章（`site/`，由 `.github/workflows/pages.yml` 部署）。
 - 2026-10-18：部署金鑰生命週期到 Fly（commit `ac23016`），部署前先建 volume 快照，部署後在線上跑完註冊碼 / rotate 端到端並刪除測試裝置；程式已推到 GitHub `main`。
 - 2026-10-18：實作金鑰生命週期（註冊碼 / 90 天到期 / 板子自行換 key / MQTT 過期掃描 / 前端對應 UI）、可設定的失敗節流、舊資料庫自動遷移；
   測試擴充為 38 + 4 項。過程中測試抓到並修正一個錯誤：建立裝置時回傳的 `enrollment_expires_at` 因組裝順序而缺漏。

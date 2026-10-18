@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32-C6 + Fly.io 裝置管理站實作筆記</title>
+<meta name="description" content="用一個 Node 程式在 Fly.io 上同時做 API Key 事件紀錄、MQTT 上下線偵測與管理頁面，再加上一次性註冊碼與會自動換的 API Key。">
+<meta property="og:title" content="ESP32-C6 + Fly.io 裝置管理站實作筆記">
+<meta property="og:description" content="API Key、MQTT、一次性註冊碼、自動換 Key，加上一堆踩坑紀錄。">
+<meta property="og:type" content="article">
+<style>
+  :root {
+    --bg: #fafaf7; --card: #ffffff; --text: #1f2430; --muted: #6a7282; --line: #e6e4dc;
+    --accent: #c2410c; --accent-soft: #fff1e8; --code-bg: #f3f1ea; --ok: #15803d; --warn: #b45309;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14161b; --card: #1b1e25; --text: #e7e9ee; --muted: #9aa3b2; --line: #2b303b;
+            --accent: #fb923c; --accent-soft: #2a1f17; --code-bg: #101216; --ok: #4ade80; --warn: #fbbf24; }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 17px/1.85 system-ui, -apple-system, "Segoe UI", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif; }
+  .wrap { max-width: 740px; margin: 0 auto; padding: 0 16px 80px; }
+  header.top { padding: 56px 0 24px; border-bottom: 1px solid var(--line); margin-bottom: 32px; }
+  .meta { color: var(--muted); font-size: 14px; letter-spacing: .02em; }
+  .meta a { color: var(--muted); }
+  h1 { font-size: clamp(26px, 5vw, 36px); line-height: 1.35; margin: 10px 0 14px; }
+  .lead { color: var(--muted); margin: 0; }
+  h2 { font-size: 24px; margin: 52px 0 12px; line-height: 1.4; scroll-margin-top: 16px; }
+  h3 { font-size: 19px; margin: 30px 0 6px; }
+  p { margin: 14px 0; }
+  a { color: var(--accent); }
+  strong { font-weight: 650; }
+  code { font: 0.88em/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; background: var(--code-bg);
+         padding: 2px 6px; border-radius: 5px; overflow-wrap: anywhere; }
+  pre { background: var(--code-bg); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+        overflow-x: auto; margin: 16px 0; font-size: 14px; line-height: 1.65; }
+  pre code { background: none; padding: 0; font-size: inherit; overflow-wrap: normal; }
+  ul, ol { padding-left: 1.3em; }
+  li { margin: 6px 0; }
+  .tip { background: var(--accent-soft); border-left: 4px solid var(--accent); border-radius: 0 10px 10px 0;
+         padding: 4px 18px; margin: 22px 0; }
+  .tip b.label { color: var(--accent); }
+  figure { margin: 26px 0; }
+  figure img { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; display: block; background: var(--card); }
+  figure.phone img { max-width: 300px; margin: 0 auto; }
+  figcaption { color: var(--muted); font-size: 14px; text-align: center; margin-top: 8px; }
+  table { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 15px; }
+  th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  .diagram { margin: 26px 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  .diagram svg { width: 100%; height: auto; display: block; }
+  .diagram text { fill: var(--text); font: 13px system-ui, "Noto Sans TC", sans-serif; }
+  .diagram .sub { fill: var(--muted); font-size: 12px; }
+  .diagram .box { fill: var(--card); stroke: var(--muted); stroke-width: 1.4; }
+  .diagram .fly { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.6; }
+  .diagram .line { stroke: var(--muted); stroke-width: 1.5; fill: none; }
+  .toc { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 20px; margin: 0 0 8px; font-size: 15px; }
+  .toc ol { margin: 6px 0; }
+  .toc a { color: var(--text); text-decoration: none; }
+  .toc a:hover { color: var(--accent); }
+  .tags { margin-top: 36px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .tags span { border: 1px solid var(--line); border-radius: 999px; padding: 2px 12px; font-size: 13px; color: var(--muted); }
+  footer { margin-top: 48px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="meta">2026-10-18 · 技術 · <a href="https://github.com/louis70109/esp32-fly-deployment">GitHub 原始碼</a></div>
+  <h1>ESP32-C6 + Fly.io 裝置管理站實作筆記</h1>
+  <p class="lead">API Key、MQTT、一次性註冊碼，還有會自己換掉的 Key。順便記下這一路踩到的坑。</p>
+</header>
+
+<h2 id="intro">前言</h2>
+<p>這陣子手邊的 ESP32-C6 要做一件聽起來很簡單的事：把紅外線發射的訊號、設備開關機的紀錄，通通丟到雲端存起來，然後打開網頁，一眼看出「這塊板子現在是死是活、設備有沒有在跑」。</p>
+<p>說實話，我一開始的想法是：不就一支 API 嗎？結果越做越發現，真正麻煩的從來不是「收資料」，而是 <strong>怎麼讓一堆板子安安全全地證明自己是誰</strong>。Key 要怎麼塞進板子？外洩了怎麼辦？放在現場沒人管的板子，Key 能不能自己換？</p>
+<p>這篇就是把整個過程記下來：架構怎麼選、Key 的生命週期怎麼設計、部署到 Fly.io 的細節，以及我（和 Claude Code）一路踩到的坑。先講在前面：<strong>伺服器端已經上線、也測過了，但 ESP32 韌體我只寫了範例，還沒有真的編譯、燒進板子</strong>。後面會老實交代。</p>
+
+<nav class="toc" aria-label="目錄">
+  <strong>目錄</strong>
+  <ol>
+    <li><a href="#arch">一個程式搞定三件事</a></li>
+    <li><a href="#two">為什麼同時要 HTTP 和 MQTT？</a></li>
+    <li><a href="#key">Key 怎麼發才不痛苦</a></li>
+    <li><a href="#rotate">Key 會過期，板子自己換</a></li>
+    <li><a href="#ui">管理頁面長這樣</a></li>
+    <li><a href="#deploy">部署到 Fly.io</a></li>
+    <li><a href="#pit">踩坑紀錄</a></li>
+    <li><a href="#todo">還沒做完的事</a></li>
+    <li><a href="#end">結語</a></li>
+  </ol>
+</nav>
+
+<h2 id="arch">🏗 一個程式搞定三件事</h2>
+<p>需求一開始看起來像要拆成兩個服務：一個收 API、一個當 MQTT broker。我最後<strong>把它們塞進同一個 Node 程式</strong>：</p>
+<ul>
+  <li><strong>Express</strong>：REST API 加上管理頁面。</li>
+  <li><strong>Aedes</strong>：直接內建在程式裡的 MQTT broker。</li>
+  <li><strong>SQLite</strong>：事件、裝置、Key 的雜湊全部放這裡，掛在 Fly 的 volume 上。</li>
+</ul>
+
+<div class="diagram" role="img" aria-label="架構圖：ESP32-C6 透過 HTTPS 與 MQTTS 連到 Fly.io 上的單一程式，管理頁面用帳密登入">
+<svg viewBox="0 0 760 290" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor" style="color:var(--muted)"/></marker></defs>
+  <rect class="box" x="16" y="95" width="150" height="100" rx="10"/>
+  <text x="91" y="132" text-anchor="middle" font-weight="600">ESP32-C6</text>
+  <text class="sub" x="91" y="154" text-anchor="middle">NVS 存 API Key</text>
+  <text class="sub" x="91" y="172" text-anchor="middle">IR 發射 / 接收</text>
+
+  <rect class="fly" x="280" y="14" width="310" height="262" rx="14"/>
+  <text x="435" y="40" text-anchor="middle" font-weight="600">Fly.io · 單一機器</text>
+  <rect class="box" x="298" y="56" width="274" height="62" rx="8"/>
+  <text x="435" y="82" text-anchor="middle">Express</text>
+  <text class="sub" x="435" y="102" text-anchor="middle">REST API + 管理頁面</text>
+  <rect class="box" x="298" y="130" width="274" height="62" rx="8"/>
+  <text x="435" y="156" text-anchor="middle">Aedes</text>
+  <text class="sub" x="435" y="176" text-anchor="middle">MQTT broker（上下線偵測）</text>
+  <rect class="box" x="298" y="204" width="274" height="56" rx="8"/>
+  <text x="435" y="228" text-anchor="middle">SQLite</text>
+  <text class="sub" x="435" y="247" text-anchor="middle">掛在 volume，兩邊共用</text>
+
+  <rect class="box" x="650" y="95" width="94" height="100" rx="10"/>
+  <text x="697" y="140" text-anchor="middle" font-weight="600">管理頁面</text>
+  <text class="sub" x="697" y="162" text-anchor="middle">瀏覽器</text>
+
+  <path class="line" d="M166 128 L296 87" marker-end="url(#ar)"/>
+  <path class="line" d="M166 162 L296 161" marker-end="url(#ar)"/>
+  <path class="line" d="M650 140 L574 92" marker-end="url(#ar)"/>
+  <text class="sub" x="196" y="96" transform="rotate(-14 196 96)">HTTPS · X-API-Key</text>
+  <text class="sub" x="190" y="182">MQTTS 8883</text>
+  <text class="sub" x="590" y="124" transform="rotate(32 590 124)">帳密登入</text>
+</svg>
+</div>
+
+<p>為什麼不拆？因為裝置少、資料量小，一台機器綽綽有餘。更實際的理由是：<strong>MQTT 的連線事件可以直接寫進資料庫</strong>，不用在兩個服務之間同步「誰在線上」。</p>
+<div class="tip">
+  <p><b class="label">代價：</b>只能跑一台機器。broker 的連線狀態在記憶體裡、SQLite 又在單一 volume 上，一旦 <code>fly scale count 2</code>，你會看到裝置在兩台機器之間跳來跳去。真的要擴充，就得把 broker 拆出去、資料庫換掉。現階段我選擇不管它。</p>
+</div>
+
+<h2 id="two">📡 為什麼同時要 HTTP 和 MQTT？</h2>
+<p>一開始我也在想，兩條路是不是太多。後來覺得它們問的是不同的問題：</p>
+<table>
+  <thead><tr><th></th><th>HTTP（API Key）</th><th>MQTT</th></tr></thead>
+  <tbody>
+    <tr><td>回答什麼</td><td>剛剛<strong>發生了什麼</strong>（發射了哪個紅外線碼、開機、關機）</td><td>它現在<strong>還活著嗎</strong>、設備有沒有在運轉</td></tr>
+    <tr><td>特性</td><td>一筆一筆的紀錄，要留存</td><td>持續連線，斷了就知道</td></tr>
+    <tr><td>斷電時</td><td>不會有任何訊號</td><td>連線一斷、keepalive 逾時，broker 就標成離線</td></tr>
+  </tbody>
+</table>
+<p>「板子被拔電源」這種事，光靠 HTTP 是看不出來的，因為沒人會呼叫你。MQTT 的長連線反而最適合：連上就是在線、斷了就是離線，我只要接 broker 的連線事件，不用自己寫心跳逾時判斷。</p>
+<p>另外 broker 有做權限：每塊板子只能發布自己的 <code>devices/&lt;id&gt;/state</code>、<code>event</code>、<code>status</code>，也只能訂閱自己的 <code>cmd</code>。不然隨便一塊板子的 Key 外洩，就能假冒別人回報狀態，那就不好玩了。</p>
+
+<h2 id="key">🔑 Key 怎麼發才不痛苦</h2>
+<p>這是整件事我花最多時間的地方。</p>
+<h3>第一層：Key 不要寫進程式碼</h3>
+<p>最直覺的做法是把 <code>API_KEY</code> 寫在 <code>.ino</code> 裡。但這樣每塊板子都要改程式、重新編譯，而且一個不小心就會連 Key 一起 push 到 GitHub（它真的會「裸奔」）。</p>
+<p>ESP32 有個叫 <strong>NVS（Non-Volatile Storage）</strong>的東西：flash 裡一塊獨立的小空間，像一張簡單的鍵值表，斷電不會消失、更新韌體也不會被洗掉。一把 Key 才幾十個 bytes，幾乎不佔空間。所以所有板子可以燒<strong>同一份韌體</strong>，Key 另外存在 NVS 裡。</p>
+<h3>第二層：燒進去的不是 Key，是「註冊碼」</h3>
+<p>可是還有個問題：Key 要先產生、再寫進板子，中間那份檔案或那行指令如果外流呢？所以我改成這樣：</p>
+<ol>
+  <li>在管理頁面建立裝置，伺服器產生一組 <strong>一次性註冊碼</strong>（24 小時內有效、只能用一次、資料庫只存雜湊）。</li>
+  <li>註冊碼寫進板子的 NVS。</li>
+  <li>板子第一次連上網，拿註冊碼向 <code>/api/v1/enroll</code> 換正式的 API Key，存進 NVS。</li>
+</ol>
+<pre><code>POST /api/v1/enroll
+{"device_id":"esp-living","code":"en_xxxxxxxxxxxxxxxxxxxxxx"}
+
+→ 201 {"api_key":"dk_...","key_expires_at":1792000000000}</code></pre>
+<p>這樣燒錄用的東西就算外流，過了 24 小時或被用掉一次就沒用了。這個端點不需要登入（註冊碼本身就是憑證），所以我另外加了失敗次數的節流，避免有人亂猜。</p>
+<div class="tip">
+  <p><b class="label">經驗談：</b>伺服器永遠只存 Key 的 SHA-256 雜湊，連我自己都看不到原本的 Key。代價是 Key 只會在產生的那一刻顯示一次，錯過就只能重發。我覺得這個不方便是值得的。</p>
+</div>
+
+<h2 id="rotate">⏳ Key 會過期，板子自己換</h2>
+<p>板子放在現場沒人管，Key 總不能永遠有效。但如果只是單純加個到期日，到期那天所有板子就一起失聯，那更慘。所以我做成「<strong>有期限，但板子會在到期前自己換</strong>」：</p>
+<ul>
+  <li>Key 預設有效 <strong>90 天</strong>。</li>
+  <li>板子每天打一次 <code>/heartbeat</code>。剩下不到三分之一壽命時，伺服器回 <code>should_rotate: true</code>。</li>
+  <li>板子呼叫 <code>/rotate</code> 拿到新 Key，<strong>先確認寫進 NVS 成功，才改用新 Key</strong>。</li>
+  <li>舊 Key 還會再活 24 小時（寬限期），而且<strong>新 Key 第一次成功使用的瞬間，舊 Key 就作廢</strong>。</li>
+</ul>
+<p>寬限期是為了一個很現實的情境：板子在寫 NVS 的時候突然斷電。如果新 Key 回應丟了、舊 Key 又馬上失效，板子就永遠被鎖在外面。有了寬限期，它重開機後拿舊 Key 再打一次 <code>/rotate</code>，就能拿到新的。</p>
+<h3>為什麼過期的 Key 不能自己換？</h3>
+<p>這是故意的。如果過期的 Key 還能 rotate，那一把外洩的 Key 就能無限續命。代價是：板子如果離線超過 Key 的壽命，就得由管理者在頁面按「註冊碼」重新配發。</p>
+<div class="tip">
+  <p><b class="label">老實講的限制：</b>自動換 Key 保護的是「舊 Key 外洩」。如果有人拿到的是<em>目前</em>這把 Key，他也能呼叫 <code>/rotate</code>，甚至搶先把 Key 換掉，讓真正的板子拿到 401。好處是這種情況看得見：那塊板子會突然離線，你在頁面按一下「註冊碼」重新配發，攻擊者手上的 Key 就作廢了。要防「Key 被複製走」，得靠 flash encryption 這類硬體層的保護，這篇沒有做。</p>
+</div>
+
+<h2 id="ui">🖥 管理頁面長這樣</h2>
+<p>前端就是一個靜態頁面加一點原生 JavaScript，沒有框架。帳號密碼登入後，伺服器發一個 HttpOnly、SameSite=Strict 的 session cookie。</p>
+<p>以下截圖都是我在<strong>本機灌示範資料</strong>拍的，不是正式站。</p>
+<figure><img src="img/01-login.jpg" alt="登入頁面：帳號與密碼欄位" loading="lazy"><figcaption>登入頁：帳號 + 密碼</figcaption></figure>
+<figure><img src="img/02-dashboard.jpg" alt="儀表板總覽，顯示運轉中、未運轉、離線、待註冊、金鑰快到期與金鑰過期的裝置卡片" loading="lazy"><figcaption>總覽：運轉中、未運轉、離線、待註冊、金鑰剩 9 天、金鑰已過期，一眼看完</figcaption></figure>
+<figure><img src="img/03-events.jpg" alt="某台裝置的事件紀錄表，列出 ir_tx、ir_rx、power_on、boot" loading="lazy"><figcaption>事件紀錄：紅外線發射 / 接收、開關機、開機</figcaption></figure>
+<figure><img src="img/04-add-device.jpg" alt="新增裝置對話框，預設勾選用一次性註冊碼配發" loading="lazy"><figcaption>新增裝置：預設用註冊碼配發</figcaption></figure>
+<figure><img src="img/05-enroll-code.jpg" alt="註冊碼對話框，顯示裝置 ID、註冊碼與換取金鑰的 API 範例" loading="lazy"><figcaption>註冊碼只顯示這一次，24 小時內有效</figcaption></figure>
+<figure class="phone"><img src="img/06-mobile.jpg" alt="手機版畫面" loading="lazy"><figcaption>手機也能看（出門在外想確認板子還活著的時候很實用）</figcaption></figure>
+
+<h2 id="deploy">🚀 部署到 Fly.io</h2>
+<p>幾個重點設定：</p>
+<ul>
+  <li>HTTP 走 443，MQTT 走 <strong>8883 並用 <code>tls</code> handler</strong>，讓 Fly 幫忙終結 TLS，板子連的是 <code>mqtts</code>。</li>
+  <li><code>auto_stop_machines = "off"</code>：機器一休眠，所有裝置就會顯示離線，這是最容易忘記的一項。</li>
+  <li>掛一個 volume 放 SQLite，並且<strong>只跑一台機器</strong>。</li>
+  <li>管理者密碼和 session 簽章放在 <code>fly secrets</code>，不進程式碼。</li>
+</ul>
+<pre><code>fly launch --copy-config --no-deploy
+fly volumes create hub_data --size 1 --region nrt
+fly secrets set ADMIN_USER=admin ADMIN_PASSWORD="…" SESSION_SECRET="…"
+fly deploy --remote-only --ha=false</code></pre>
+<p>部署前我會先確認 volume 有最近的快照，沒有就手動建一個、等它跑完再部署。這次部署完，我對線上跑了一次完整流程：建測試裝置、用註冊碼換 Key、發事件、MQTT 連線、換 Key、最後刪掉測試裝置，全部通過才算數。</p>
+
+<h2 id="pit">🪤 踩坑紀錄</h2>
+<p>這一段是我自己最想留下來的。每一個都是真的踩到的。</p>
+<h3>1. fly.toml 一個空的表格就讓整個設定壞掉</h3>
+<p>我多寫了一行空的 <code>[http_service.checks]</code>，後面又接 <code>[[http_service.checks]]</code>，TOML 直接報錯「已經是 table，不能再當 array table」。結果 volume 和 secret 的指令全都跟著失敗，因為 flyctl 每次都要先解析 <code>fly.toml</code>。刪掉那一行就好，但花了我一點時間才想到是設定檔本身的問題。</p>
+<h3>2. 快照指令要用 volume ID，不是名稱</h3>
+<p><code>fly volumes snapshots list hub_data</code> 會回 <code>volume hub_data not found</code>。要用 <code>vol_xxxx</code> 這串 ID。另外 volume 才建立兩小時的時候，每日自動快照根本還沒跑，所以「有近期快照」要自己動手建。</p>
+<h3>3. Windows 上 curl 傳中文會變成 ????</h3>
+<p>在 Git Bash 用 <code>curl -d</code> 送中文名稱，存進去的資料變成問號。一開始我還以為是伺服器的編碼寫錯，查半天才發現是 shell 傳參數時就壞了。改用 Node 送就正常。</p>
+<h3>4. 對話框莫名其妙多出一行 "null"</h3>
+<p>這個是我<strong>實際在瀏覽器點過才抓到</strong>的。我的程式裡有 <code>條件 ? 元素 : null</code> 這種寫法，結果把 <code>null</code> 直接丟給原生的 <code>replaceChildren()</code>，它很老實地把 <code>null</code> 轉成文字 "null" 貼在畫面上。API 測試全綠，畫面卻是歪的。教訓是：<strong>測試過了不代表畫面對</strong>。</p>
+<h3>5. 回傳物件的組裝順序</h3>
+<p>建立裝置時，我先組好回傳的 <code>device</code> 物件，才去產生註冊碼，結果回傳裡「註冊碼到期時間」永遠是空的。這個是自動測試抓到的。物件字面值是由上往下算的，順序寫反就是 bug。</p>
+<h3>6. 本機 Node 16，better-sqlite3 沒有預編譯檔</h3>
+<p>新版的 <code>better-sqlite3</code> 在 Node 16 的 Windows 上找不到預編譯檔，退回去現場編譯，然後因為沒有 Visual Studio 就死了。我把它釘在 <code>~8.7.0</code>，Docker 裡用 Node 20 一樣能跑。</p>
+
+<h2 id="todo">😅 還沒做完的事</h2>
+<p>這裡要老實講，免得讀的人以為這是個完工的東西：</p>
+<ul>
+  <li><strong>ESP32 韌體只有範例，沒有編譯過，也沒有燒進板子。</strong>我刻意沒在這台電腦裝工具鏈，範例裡有 NVS、序列埠佈建、註冊、每日 heartbeat、自動換 Key，但第一次編譯八成還要修幾個錯。</li>
+  <li><strong>「設備有沒有在運轉」目前是假設的。</strong>韌體現在只是「按鈕切換，並認為設備跟著開或關」，沒有真的去感測設備狀態。這要看實際設備怎麼偵測，還沒決定。</li>
+  <li><strong>TLS 沒有驗證伺服器。</strong>範例用 <code>setInsecure()</code>，連線有加密，但不驗證對方的身分。正式用要換成放根憑證。</li>
+  <li><strong>NVS 預設沒加密。</strong>有實體接觸板子的人可以讀出 flash 裡的 Key。</li>
+  <li>批次燒錄腳本還沒寫。板子不多的話，用序列埠打指令就夠了。</li>
+</ul>
+
+<h2 id="end">結語</h2>
+<p>回頭看，這個專案最有意思的部分反而不是 MQTT 或 API，而是「Key 的一生」：怎麼發、怎麼存、怎麼換、怎麼在出事時收回來。每一個環節都有「方便」和「安全」的取捨，我的選擇是：<strong>方便的事情交給程式自動做（自動換 Key），危險的事情交給人決定（過期重發）</strong>。</p>
+<p>這次是和 Claude Code 一起做的，伺服器、前端、測試和部署都走完了；ESP32 那一半留給下一輪，等我在板子上真的跑起來，再來補一篇。</p>
+<p>以上內容為個人實作心得，原始碼和交接文件都在 <a href="https://github.com/louis70109/esp32-fly-deployment">GitHub</a>，若有任何問題或建議，歡迎到那邊開 issue 交流。</p>
+
+<div class="tags"><span>ESP32-C6</span><span>Fly.io</span><span>MQTT</span><span>IoT</span><span>API Key</span></div>
+
+<footer>
+  文章與原始碼：<a href="https://github.com/louis70109/esp32-fly-deployment">louis70109/esp32-fly-deployment</a>。文中截圖為本機示範資料。
+</footer>
+
+</div>
+</body>
+</html>

@@ -259,10 +259,12 @@
   }
 
   // ---------------------------------------------------------------- dialogs
+  // Native replaceChildren() turns a null child into the text "null"; drop empty slots first.
+  const fill = (node, ...kids) => node.replaceChildren(...kids.filter((k) => k != null && k !== false));
   function closeDlg() { dlg.close(); }
 
   function openAdd() {
-    dlg.replaceChildren(
+    fill(dlg,
       el('h2', {}, '新增裝置'),
       el('label', { for: 'dn' }, '名稱（例如：客廳冷氣）'),
       el('input', { id: 'dn', maxlength: 60 }),
@@ -293,7 +295,7 @@
   }
 
   function showCode(id, enr, title, replacesKey) {
-    dlg.replaceChildren(
+    fill(dlg,
       el('h2', {}, title),
       el('p', { class: 'meta' }, `註冊碼只會顯示這一次，${fmtTime(enr.expires_at)} 前有效，只能使用一次。`),
       el('label', {}, '裝置 ID'), el('pre', {}, id),
@@ -319,7 +321,7 @@
 
   function showKey(id, key, title, expiresAt) {
     const host = location.hostname;
-    dlg.replaceChildren(
+    fill(dlg,
       el('h2', {}, title),
       el('p', { class: 'meta' }, '金鑰只會顯示這一次，請現在複製並燒錄到 ESP32。'),
       el('label', {}, '裝置 ID'), el('pre', {}, id),
