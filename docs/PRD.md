@@ -86,13 +86,16 @@ curl https://esp-hub-louis.fly.dev/healthz    # {"ok":true}
 已驗證（線上端到端 + 本機 `npm test`）：HTTP 事件上傳、MQTT over TLS 上線/離線偵測、
 管理登入、錯誤密碼 / 偽造 cookie / 舊金鑰皆被拒。
 
-### 2.0 UI 修正尚未部署
+### 2.0 註冊碼對話框 `null` 字樣（已修正並已部署）
 2026-10-18 在瀏覽器實際操作「新增裝置 → 註冊碼」時發現：對話框按鈕上方多出一行字面的 `null`（原生 `replaceChildren()` 會把 `null` 轉成文字）。
-已在 `public/index.html` 修正（改用 `fill()` 過濾空值），本機驗證消失；**線上仍是舊版，下次 `flyctl deploy` 才會生效**。
+已在 `public/index.html` 修正（改用 `fill()` 過濾空值），本機驗證消失；**已於 2026-10-19（台灣時間）部署到 Fly**，
+並由 `tools/e2e-prod.js` 確認線上提供的是含修正的版本（檢查頁面內含 `const fill = `）。
 
 ### 2.1 金鑰生命週期（2026-10-18 完成，**已部署並在線上驗證**）
 - **部署**：2026-10-18，程式為 commit `ac23016`。部署前手動建立 volume 快照 `vs_BYPBxn2KOYMSe0ggRemo`（保留 5 天；volume 當時才建立 2 小時，每日自動快照尚未產生）。
   正式資料庫的遷移在啟動時自動完成，log 無錯誤。
+- **第二次部署**（2026-10-19，台灣時間）：commit `8932a99`（含 `null` 修正）。部署前再手動建立快照 `vs_geY581XZae3sxmXlR8J`（舊的 `vs_BYPB...` 已是 10 小時前、且早於上次部署）；
+  部署後 `tools/e2e-prod.js` 全部通過、測試裝置已刪除。
 - **本機測試**：`npm test` = `test/smoke.js` 38 項 + `test/migrate.js` 4 項（用舊結構的暫存資料庫驗證遷移）。
 - **線上端到端**（部署後執行，測完已刪除測試裝置）：以 `enroll:true` 建立裝置 → `/enroll` 換 key（到期日 90.0 天）→ 註冊碼不可重用 →
   事件上傳 → heartbeat（`should_rotate:false`）→ MQTT over TLS 連線後在線 + 運轉中 → `/rotate`（寬限期內舊 key 可用、新 key 一用舊 key 即作廢）→
@@ -197,7 +200,14 @@ MQTT  devices/<id>/state | event | status(LWT) ; 訂閱 devices/<id>/cmd（目�
    沒有或太舊就 `flyctl volumes snapshots create <volume-id> --app esp-hub-louis`，等狀態從 `running` 變 `created` 再繼續。
 3. `flyctl deploy --app esp-hub-louis --remote-only --ha=false`；看 `flyctl logs --app esp-hub-louis --no-tail`
    （啟動瞬間 health check 失敗一次是正常的，之後會 passing）。
-4. `curl https://esp-hub-louis.fly.dev/healthz`，再對線上跑一次端到端（建測試裝置 → 驗證 → 刪除）。需要管理者密碼，由使用者提供。
+4. `curl https://esp-hub-louis.fly.dev/healthz`，再對線上跑一次端到端（建測試裝置 → 驗證 → 刪除）：
+   ```bash
+   E2E_ADMIN_PASSWORD='管理者密碼' node tools/e2e-prod.js     # 需要先 npm install（用到 devDependency mqtt）
+   ```
+   密碼由使用者提供，只放環境變數，不要寫進檔案或指令歷史以外的地方。成功會印出 `production enrollment flow OK` 並刪除測試裝置。
+5. 更新本文件的部署紀錄（§2.1）與變更紀錄，commit、push。
+
+**小提醒**：快照剛建立時狀態是 `waiting` → `running` → `created`，要等到 `created` 才能部署；`flyctl` 的輸出要在 Git Bash 用管線餵給 `node` 讀取會失敗（EOF），直接寫死 volume ID 或改用 PowerShell。
 
 ```bash
 npm install && npm start        # 本機；沒設 ADMIN_PASSWORD 會產生一組並印在 console（帳號 admin）
@@ -214,6 +224,7 @@ flyctl logs --app esp-hub-louis
 - 安全守則：不要把 ADMIN 密碼、裝置 API key 寫進 repo、文件或 commit。
 
 ## 7. 變更紀錄
+- 2026-10-19：部署註冊碼對話框 `null` 修正（部署前建快照 `vs_geY581XZae3sxmXlR8J`）；新增 `tools/e2e-prod.js` 作為線上端到端驗證，已對正式站跑過並通過。
 - 2026-10-18：新增完整韌體範例（NVS、序列埠佈建、enroll / heartbeat / rotate、過期處理）與 firmware/README.md，**未編譯、未上板**；
   修正註冊碼對話框的 `null` 字樣（未部署）；新增 GitHub Pages 文章（`site/`，由 `.github/workflows/pages.yml` 部署）。
 - 2026-10-18：部署金鑰生命週期到 Fly（commit `ac23016`），部署前先建 volume 快照，部署後在線上跑完註冊碼 / rotate 端到端並刪除測試裝置；程式已推到 GitHub `main`。
