@@ -85,7 +85,7 @@ curl "https://$FLY_HOST/healthz"      # {"ok":true}
 | MQTT | `$FLY_HOST:8883`（TLS，Fly 終結，轉到容器 1883） |
 | GitHub | https://github.com/louis70109/esp32-fly-deployment（`main`） |
 | 文章（部落格，主要版本） | https://nijialin.com/2026/10/19/esp32-c6-fly-io-device-hub/ 。原始檔在使用者的部落格 repo `louis70109/louis70109.github.io` 的 `source/_posts/esp32-c6-fly-io-device-hub.md`（圖片在 `source/images/esp32-hub-*`），推到該 repo 的 `main` 會由它自己的 workflow 測試、建置、部署（並發 LINE 通知給管理者）。**文章裡的 AI prompt 是複製過去的靜態文字，與本 repo 的 `public/ai-prompt.txt` 不會自動同步**，改 prompt 時兩邊都要更新。 |
-| 文章（專案頁，副本） | https://nijialin.com/esp32-fly-deployment/ （原始檔在 `site/`，推到 `main` 且 `site/**` 有變更時由 `.github/workflows/pages.yml` 自動部署；帳號有綁自訂網域，所以不是 `louis70109.github.io`） |
+| 文章（專案頁） | https://nijialin.com/esp32-fly-deployment/ ，**現在只是導向頁**（meta refresh + JS，canonical 指向部落格文章）。原始檔 `site/index.html`，推到 `main` 且 `site/**` 有變更時由 `.github/workflows/pages.yml` 部署；帳號有綁自訂網域，所以不是 `louis70109.github.io`。 |
 | 儲存 | SQLite，Fly volume `hub_data` 掛在 `/data`（1 GB） |
 | IP | 共用 IPv4 + 專屬 IPv6（免費；沒有買專屬 IPv4） |
 | Fly secrets | `ADMIN_USER`、`ADMIN_PASSWORD`、`SESSION_SECRET`（**密碼不在 repo 裡**，也不要寫進文件；使用者已拿到） |
@@ -96,13 +96,13 @@ curl "https://$FLY_HOST/healthz"      # {"ok":true}
 ### 2.0.1 「AI Prompt」功能（2026-10-19，**已推送並已部署到 Fly 與 Pages**）
 給使用者貼給 AI 產生韌體的 prompt，單一正本是 `public/ai-prompt.txt`：
 - 管理頁面：右上角「AI Prompt」按鈕（檢視 + 複製），註冊碼 / 金鑰對話框也有「複製 AI Prompt」。複製有 `execCommand` 備援，失敗會明說。
-- 文章頁：「丟給 AI 幫你寫韌體」區塊。Pages 工作流程在部署時把 `public/ai-prompt.txt` 複製成 `site/ai-prompt.txt`（該檔已 gitignore）。
+- 文章：部落格文章裡有「丟給 AI 幫你寫韌體」區塊（靜態複製，不會自動同步，見 §2 表格）。專案頁（`site/index.html`）現在只是導向頁，不再放文章與 prompt。
 - `firmware/AI-PROMPT.md` 版本 A 必須與 `public/ai-prompt.txt` 完全一致，`npm test` 的 `test/prompt.js` 會檢查（改 prompt 請兩處同步）。
 - 已驗證：本機瀏覽器真實點擊「複製」顯示「已複製 ✓」（腳本模擬的點擊會被瀏覽器拒絕，不代表壞掉）。
 - **未驗證**：prompt 實際讓 AI 產生的韌體能不能編譯——沒有人跑過。
 - 已於 2026-10-19 部署到 Fly（commit `0dca2f6`，部署前沿用 15 分鐘前建立、且晚於上次部署的快照 `vs_geY581XZae3sxmXlR8J`）；
   `tools/e2e-prod.js` 全部通過、測試裝置已刪除；線上 `/ai-prompt.txt` 回 200、管理頁面含 `openPrompt`。
-  **沒有**在正式站登入點過按鈕（需要管理者密碼）；按鈕行為只在本機真實點擊驗證過。文章頁由 Pages 自動更新，線上檔案已確認可載入。
+  **沒有**在正式站登入點過按鈕（需要管理者密碼）；按鈕行為只在本機真實點擊驗證過。
 
 ### 2.0 註冊碼對話框 `null` 字樣（已修正並已部署）
 2026-10-18 在瀏覽器實際操作「新增裝置 → 註冊碼」時發現：對話框按鈕上方多出一行字面的 `null`（原生 `replaceChildren()` 會把 `null` 轉成文字）。
@@ -245,6 +245,7 @@ flyctl logs --app "$FLY_APP"
 - 2026-10-19：依使用者要求，把文章寫進部落格 repo `louis70109/louis70109.github.io`（commit `ba98e9e81`），文筆與格式照該部落格慣例（front matter、`<!-- more -->`、emoji 小標、圖片放 `source/images`）。
   該站用自製生成器（`scripts/site.mjs`，Node ≥ 20，我在 Node 16 也能建置）；push 到 `main` 後 workflow 跑 `npm test` + `npm run build` 並部署，已確認通過、線上文章與 7 個圖檔皆 200。
   本 repo 的 GitHub Pages 專案頁仍保留（內容相同，屬副本）。要不要停掉或導向部落格版本待使用者決定。
+- 2026-10-19：依使用者要求，專案頁改為導向部落格文章（`site/index.html` 換成導向頁、刪除 `site/img/`，Pages 工作流程移除複製 prompt 的步驟）；GitHub repo 的 Website 欄位改為部落格文章網址。repo description 內仍寫舊的專案頁網址（會導向，不影響使用）。
 - 2026-10-19：AI Prompt 部署到 Fly（`0dca2f6`）並通過 `tools/e2e-prod.js`。
 - 2026-10-19：依使用者要求，從公開 repo 移除 Fly 的 app 名稱與網址：GitHub description、PRD、`fly.toml`、韌體預設主機、AI prompt、管理頁面、e2e 腳本都改成占位字，交接改為「登入 Fly 後 `flyctl apps list` 查」（§0.2）。**git 歷史裡仍有舊內容**（要清除需改寫歷史並 force-push，使用者未要求，未做）。正式站仍在跑舊檔案，下次部署才會同步。`fly.toml` 的 app 現在是占位字，部署靠 `--app "$FLY_APP"` 覆蓋，**這個覆蓋行為尚未實測**；若 `flyctl deploy` 報錯，在本機暫時把 `fly.toml` 的 app 改成實際名稱，不要 commit。
 - 2026-10-19：新增 AI Prompt（`public/ai-prompt.txt`、管理頁面按鈕、文章頁區塊、`test/prompt.js` 防漂移）；複製按鈕加上 `execCommand` 備援與成功 / 失敗提示；
